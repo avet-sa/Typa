@@ -42,6 +42,9 @@ class TypingTest(QWidget):
         self.setupUI()
         self.results_ready.connect(self.showResults)
 
+        # Preload middot character to prevent rendering delay
+        self.preloadCharacters()
+
         self.updatePromptDisplay()
         self.updateControlPanel()
         self.updateThemeColors()
@@ -68,6 +71,13 @@ class TypingTest(QWidget):
                 json.dump(config, f)
         except Exception as e:
             print(f"Error saving config: {e}")
+
+    def preloadCharacters(self):
+        """Preload special characters to prevent first-render delay"""
+        # Set invisible HTML with middot to force font rendering/caching
+        self.promptLabel.setHtml('<span style="color:transparent; font-size:1px;">&middot;&#8203;</span>')
+        # Immediately clear it - the glyph is now cached
+        QTimer.singleShot(1, lambda: self.updatePromptDisplay())
 
     def setupUI(self):
         self.setWindowTitle("Typing Test")
