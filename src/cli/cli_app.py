@@ -13,22 +13,24 @@ class CLITypingTest:
         self.MIN_W, self.MIN_H = 60, 15
         self.last_render_lines = 0  # Track number of lines rendered
         self.initial_render = True
+        self.last_term_size = (0, 0)  # Track terminal size for resize detection
+        self.warning_shown = False  # Track if terminal size warning is being displayed
         
         
     def get_terminal_size(self):
         try:
             size = shutil.get_terminal_size()
             cols, rows = int(size.columns), int(size.lines)
+            return cols, rows
         except Exception:
-            pass
-        
-        return cols, rows
+            return 80, 24  # Default fallback size
 
     def show_terminal_size_warning(self, cols, rows, min_cols, min_rows):
         """
         Display a visible warning if terminal is smaller than recommended size.
         Non-intrusive: shown only once at the top. 
         """
+        self.warning_shown = True
         warning = f"⚠ Terminal too small\nCurrent: {cols}×{rows}\nRecommended: {min_cols}×{min_rows}"
         lines = [line.center(cols) for line in warning.split("\n")]
 
@@ -96,6 +98,9 @@ class CLITypingTest:
         if term_width < self.MIN_W or term_height < self.MIN_H:
             self.show_terminal_size_warning(term_width, term_height, self.MIN_W, self.MIN_H)
             return
+        
+        # Clear warning flag since we're rendering normal content
+        self.warning_shown = False
         
         # Tokenize text into words and separators
         tokens = re.split(r"(\s+)", self.engine.current_text)
@@ -437,14 +442,28 @@ class CLITypingTest:
                 tty.setraw(sys.stdin.fileno())
 
             self.render()
+            self.last_term_size = self.get_terminal_size()
             last_input_len = 0
 
             while self.running:
                 try:
+                    # Check for terminal resize
+                    current_term_size = self.get_terminal_size()
+                    if current_term_size != self.last_term_size:
+                        self.last_term_size = current_term_size
+                        self.render()
+                        last_input_len = len(self.engine.user_input)
+                    
                     if os.name == "nt":
                         # Windows
                         if msvcrt.kbhit():
                             char = msvcrt.getch()
+
+                            # Skip all input processing if warning is shown
+                            if self.warning_shown:
+                                if char == b"\x03":  # Still allow Ctrl+C to quit
+                                    raise KeyboardInterrupt
+                                continue
 
                             if char == b"\x03":  # Ctrl+C
                                 raise KeyboardInterrupt
@@ -502,6 +521,12 @@ class CLITypingTest:
                         rlist, _, _ = select.select([sys.stdin], [], [], 0)
                         if rlist:
                             char = sys.stdin.read(1)
+
+                            # Skip all input processing if warning is shown
+                            if self.warning_shown:
+                                if char == "\x03":  # Still allow Ctrl+C to quit
+                                    raise KeyboardInterrupt
+                                continue
 
                             if char == "\x03":  # Ctrl+C
                                 raise KeyboardInterrupt
