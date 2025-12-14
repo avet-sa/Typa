@@ -204,14 +204,19 @@ class TypingTest(QWidget):
         self.promptLabel.setStyleSheet("background: transparent;")
         self.promptLabel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.promptLabel.setFont(QFont("Cascadia Mono", 18))
-        self.promptLabel.setFixedHeight(
-            170
-        )  # Approx 4 lines (24px * 1.6 * 4 = 153.6px) + padding
+        self.promptLabel.setFixedHeight(170)  # Approx 4 lines (24px * 1.6 * 4 = 153.6px) + padding
+        self.promptLabel.setAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
 
         layout.addWidget(self.promptLabel)
         layout.addStretch()
 
-        # Live stats
+        # Timer display (large, centered, above everything)
+        self.timerLabel = QLabel()
+        self.timerLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.timerLabel.setFont(QFont("Cascadia Mono", 20, QFont.Weight.Bold))
+        layout.addWidget(self.timerLabel)
+
+        # Live stats (wpm and accuracy only)
         self.statsLabel = QLabel()
         self.statsLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.statsLabel.setFont(QFont("Cascadia Mono", 14, QFont.Weight.Bold))
@@ -362,7 +367,21 @@ class TypingTest(QWidget):
                 lbl.setStyleSheet("color: #6b7280; font-weight: normal;")
 
     def updatePromptDisplay(self):
-        self.promptLabel.setHtml(self.engine.color_text())
+        # Estimate number of lines based on text length and display width
+        text_length = len(self.engine.current_text)
+        chars_per_line = 50  # Approximate based on font size and container width
+        estimated_lines = max(1, (text_length + chars_per_line - 1) // chars_per_line)
+        
+        # Get colored text
+        colored_text = self.engine.color_text()
+        
+        # Center text if fewer than 4 lines by adding top and bottom spacing
+        if estimated_lines < 4:
+            # Create spacing by adding empty lines before and after
+            top_spacing = "<br>" * ((4 - estimated_lines) // 2)
+            colored_text = f"<div style='text-align: center;'>{top_spacing}{colored_text}</div>"
+        
+        self.promptLabel.setHtml(colored_text)
 
         # Auto-scroll to cursor
         cursor = self.promptLabel.textCursor()
@@ -389,13 +408,20 @@ class TypingTest(QWidget):
             accuracy, wpm = self.engine.calculate_stats()
             time_remaining = int(self.engine.get_time_remaining())
             c = self.current_theme
+            
+            # Update timer (only time, larger)
+            self.timerLabel.setText(f"<span style='color:{c}'>{time_remaining}s</span>")
+            
+            # Update stats (wpm and accuracy only)
             self.statsLabel.setText(
-                f"<span style='color: #9ca3af'>time: </span> <span style='color:{c}'>{time_remaining}s</span>   <span style='color: #9ca3af'>acc: </span> <span style='color:{c}'>{int(accuracy)}%</span>   <span style='color: #9ca3af'>wpm: </span> <span style='color:{c}'>{int(wpm)}</span>"
+                f"<span style='color: #9ca3af'>acc: </span> <span style='color:{c}'>{int(accuracy)}%</span>   <span style='color: #9ca3af'>wpm: </span> <span style='color:{c}'>{int(wpm)}</span>"
             )
         else:
             time_limit = int(self.engine.time_limit)
             c = self.current_theme
-            self.statsLabel.setText(f"<span style='color: #9ca3af'>time: </span> <span style='color:{c}'>{time_limit}s</span>")
+            # Timer shows time limit before test starts
+            self.timerLabel.setText(f"<span style='color:{c}'>{time_limit}s</span>")
+            self.statsLabel.setText("")
 
     def showResults(self, accuracy, wpm):
         # Get personal best BEFORE saving to compare correctly
@@ -451,6 +477,7 @@ class TypingTest(QWidget):
         self.results_shown = False  # Reset flag for new test
         self.stackedWidget.setCurrentWidget(self.typingScreen)
         self.updatePromptDisplay()
+        self.timerLabel.setText("")
         self.statsLabel.setText("")
 
     def keyPressEvent(self, event: QKeyEvent):

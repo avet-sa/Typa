@@ -106,6 +106,18 @@ class CLITypingTest:
         # Clear warning flag since we're rendering normal content
         self.warning_shown = False
         
+        # Timer display (above text)
+        theme_color = self.hex_to_ansi(self.engine.accent_color)
+        if self.engine.started:
+            time_remaining = int(self.engine.get_time_remaining())
+            timer_display = f"{theme_color}{time_remaining}s\033[0m"
+        else:
+            time_limit = int(self.engine.time_limit)
+            timer_display = f"{theme_color}{time_limit}s\033[0m"
+        
+        content_lines.append(timer_display)
+        content_lines.append("")  # Empty line after timer
+        
         # Tokenize text into words and separators
         tokens = re.split(r"(\s+)", self.engine.current_text)
 
@@ -130,7 +142,6 @@ class CLITypingTest:
 
         # Colorize each line
         global_idx = 0
-        theme_color = self.hex_to_ansi(self.engine.accent_color)
 
         for line_text in lines:
             line_chars = []
@@ -151,14 +162,12 @@ class CLITypingTest:
 
         content_lines.append("")  # Empty line
 
-        # Stats
+        # Stats (wpm and accuracy only, no time)
         if self.engine.started:
             accuracy, wpm = self.engine.calculate_stats()
-            time_remaining = int(self.engine.get_time_remaining())
-            stats = f"\033[90mtime\033[0m {theme_color}{time_remaining}s\033[0m  \033[90mwpm\033[0m {theme_color}{wpm:.0f}\033[0m  \033[90macc\033[0m {theme_color}{accuracy:.0f}%\033[0m"
+            stats = f"\033[90mwpm\033[0m {theme_color}{wpm:.0f}\033[0m  \033[90macc\033[0m {theme_color}{accuracy:.0f}%\033[0m"
         else:
-            time_limit = int(self.engine.time_limit)
-            stats = f"\033[90mtime\033[0m {theme_color}{time_limit}s\033[0m  \033[90mstart typing...\033[0m"
+            stats = f"\033[90mstart typing...\033[0m"
         content_lines.append(stats)
 
         # Use flicker-free rendering technique
@@ -182,9 +191,9 @@ class CLITypingTest:
         for line in content_lines:
             if line == "":
                 output_buffer.append(newline)
-            elif "wpm" in line:  # Stats line
+            elif "wpm" in line or "start typing" in line:  # Stats line
                 output_buffer.append(self.center_text(line, strip_ansi=True) + newline)
-            else:  # Text lines
+            else:  # Text lines or timer
                 output_buffer.append(self.center_text(line, strip_ansi=True) + newline)
         output_buffer.append(newline)
 
