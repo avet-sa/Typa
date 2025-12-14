@@ -23,6 +23,7 @@ class TypingTest(QWidget):
     def __init__(self):
         super().__init__()
         self.engine = TypingTestEngine()
+        self.results_shown = False  # Track if results have been shown for current test
 
         self.current_theme = "#22c55e"  # Default green
         self.themes = {
@@ -229,14 +230,19 @@ class TypingTest(QWidget):
         layout.setSpacing(30)
         layout.addStretch()
 
+        self.personalBest = QLabel()
+        self.personalBest.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.personalBest.setFont(QFont("Cascadia Mono", 24, QFont.Weight.Bold))
+        layout.addWidget(self.personalBest)
+
         self.accuracyLabel = QLabel()
         self.accuracyLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.accuracyLabel.setFont(QFont("Cascadia Mono", 24, QFont.Weight.Bold))
+        self.accuracyLabel.setFont(QFont("Cascadia Mono", 18, QFont.Weight.Bold))
         layout.addWidget(self.accuracyLabel)
 
         self.wpmLabel = QLabel()
         self.wpmLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.wpmLabel.setFont(QFont("Cascadia Mono", 24, QFont.Weight.Bold))
+        self.wpmLabel.setFont(QFont("Cascadia Mono", 18, QFont.Weight.Bold))
         layout.addWidget(self.wpmLabel)
 
         layout.addStretch()
@@ -374,7 +380,8 @@ class TypingTest(QWidget):
     def updateLiveStats(self):
         if self.engine.started:
             # Check if time is up
-            if self.engine.is_time_up():
+            if self.engine.is_time_up() and not self.results_shown:
+                self.results_shown = True
                 accuracy, wpm = self.engine.calculate_stats()
                 self.results_ready.emit(accuracy, wpm)
                 return
@@ -391,12 +398,18 @@ class TypingTest(QWidget):
             self.statsLabel.setText(f"<span style='color: #9ca3af'>time: </span> <span style='color:{c}'>{time_limit}s</span>")
 
     def showResults(self, accuracy, wpm):
+        # Get personal best BEFORE saving to compare correctly
+        pb = self.engine.get_personal_best()
+        
         # Save test result to history
         self.engine.save_test_result(accuracy, wpm)
         
-        # Get personal best
-        pb = self.engine.get_personal_best()
-        is_new_pb = pb and wpm > pb.get("wpm", 0) if pb else True
+        # Check if this is a new personal best
+        is_new_pb = False
+        if pb is None:
+            is_new_pb = True  # First test for this mode/difficulty
+        elif wpm > pb.get("wpm", 0):
+            is_new_pb = True  # Beat previous record
         
         # Determine colors based on performance
         if accuracy >= 95:
@@ -416,19 +429,26 @@ class TypingTest(QWidget):
         # Build results text
         acc_text = f"Accuracy: <span style='color:{acc_color}'>{accuracy:.2f}%</span>"
         wpm_text = f"WPM: <span style='color:{wpm_color}'>{wpm:.2f}</span>"
-        
+        pb_text = ""
+
         # Add personal best info
-        if is_new_pb and pb:
-            acc_text += f"<br/><span style='color:{self.current_theme}'>🏆 New Personal Best!</span>"
+        if is_new_pb:
+            pb_text += f"<br/><span style='color:{self.current_theme}'>✦ New Personal Best ✦</span>"
         elif pb:
-            acc_text += f"<br/><span style='color:#9ca3af'>PB: {pb['wpm']:.2f} WPM</span>"
+            pb_text += f"<br/><span style='color:#9ca3af'>Best: {pb['wpm']:.2f} WPM</span>"
+            self.personalBest.setFont(QFont("Cascadia Mono", 14, QFont.Weight.Bold))
+            self.accuracyLabel.setFont(QFont("Cascadia Mono", 24, QFont.Weight.Bold))
+            self.wpmLabel.setFont(QFont("Cascadia Mono", 24, QFont.Weight.Bold))
         
+        self.personalBest.setText(pb_text)
         self.accuracyLabel.setText(acc_text)
         self.wpmLabel.setText(wpm_text)
+        self.results_shown = True
         self.stackedWidget.setCurrentWidget(self.resultsScreen)
 
     def restart(self):
         self.engine.generate_text()
+        self.results_shown = False  # Reset flag for new test
         self.stackedWidget.setCurrentWidget(self.typingScreen)
         self.updatePromptDisplay()
         self.statsLabel.setText("")
@@ -482,6 +502,7 @@ class TypingTest(QWidget):
 
         self.updatePromptDisplay()
 
-        if len(self.engine.user_input) == len(self.engine.current_text):
+        if len(self.engine.user_input) == len(self.engine.current_text) and not self.results_shown:
+            self.results_shown = True
             accuracy, wpm = self.engine.calculate_stats()
             self.results_ready.emit(accuracy, wpm)

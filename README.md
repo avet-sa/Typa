@@ -9,7 +9,6 @@ A fast, polished, cross-platform typing test featuring:
 - Difficulty levels
 - Live WPM and accuracy tracking
 - **Test history tracking** with personal bests
-- **Export to CSV** for analysis
 - Config auto-saving  
 - Terminal size safety + centered warnings
 
@@ -65,7 +64,6 @@ project/
 | Switch mode       | **Ctrl+M**  |
 | Change difficulty | **Ctrl+D**  |
 | Change theme      | **Ctrl+T**  |
-| Export history    | **Ctrl+E**  |
 | Quit              | **Ctrl+C**  |
 
 
@@ -92,9 +90,6 @@ Every completed test is automatically saved to `history.json` including:
 The app tracks your highest WPM for each mode/difficulty combination and displays:
 - 🏆 **New Personal Best!** when you beat your previous record
 - Your current PB when viewing results
-
-### Export
-Press **Ctrl+E** in CLI mode to export your complete test history to CSV format for further analysis.
 
 
 ## 📁 Assets

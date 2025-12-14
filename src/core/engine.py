@@ -90,9 +90,19 @@ class TypingTestEngine:
             history["tests"].append(test_record)
             
             # Update personal best for this mode/difficulty
+            # A new PB is set if:
+            # 1. WPM is higher, OR
+            # 2. WPM is equal but accuracy is better
             key = f"{self.mode}_{self.difficulty}"
-            current_best = history["personal_bests"].get(key, {"wpm": 0})
+            current_best = history["personal_bests"].get(key, {"wpm": 0, "accuracy": 0})
+            
+            is_new_best = False
             if wpm > current_best.get("wpm", 0):
+                is_new_best = True
+            elif wpm == current_best.get("wpm", 0) and accuracy > current_best.get("accuracy", 0):
+                is_new_best = True
+            
+            if is_new_best:
                 history["personal_bests"][key] = {
                     "wpm": round(wpm, 2),
                     "accuracy": round(accuracy, 2),
@@ -164,25 +174,6 @@ class TypingTestEngine:
             }
         except Exception:
             return None
-    
-    def export_history_csv(self, filepath):
-        """Export test history to CSV file"""
-        try:
-            import csv
-            tests = self.get_test_history()
-            
-            if not tests:
-                return False
-            
-            with open(filepath, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=tests[0].keys())
-                writer.writeheader()
-                writer.writerows(tests)
-            
-            return True
-        except Exception as e:
-            print(f"Error exporting to CSV: {e}")
-            return False
 
     def set_mode(self, mode):
         self.mode = mode

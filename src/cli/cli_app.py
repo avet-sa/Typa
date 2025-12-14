@@ -15,6 +15,7 @@ class CLITypingTest:
         self.initial_render = True
         self.last_term_size = (0, 0)  # Track terminal size for resize detection
         self.warning_shown = False  # Track if terminal size warning is being displayed
+        self.last_render_time = 0  # Track last render time for periodic updates
         
         
     def get_terminal_size(self):
@@ -88,6 +89,9 @@ class CLITypingTest:
     def render(self):
         """Render minimal centered UI without flickering"""
         import re
+        
+        # Update render time
+        self.last_render_time = time.time()
         
         # Build content first to count lines
         content_lines = []
@@ -186,7 +190,7 @@ class CLITypingTest:
 
         # Footer
         mode_info = f"\033[90m{self.engine.mode} \033[37m|\033[90m {self.engine.difficulty}\033[0m"
-        shortcuts = f"{theme_color}^M\033[0m mode  {theme_color}^D\033[0m difficulty  {theme_color}^T\033[0m theme  {theme_color}^R\033[0m restart  {theme_color}^E\033[0m export  {theme_color}^C\033[0m quit"
+        shortcuts = f"{theme_color}^M\033[0m mode  {theme_color}^D\033[0m difficulty  {theme_color}^T\033[0m theme  {theme_color}^R\033[0m restart  {theme_color}^C\033[0m quit"
 
         output_buffer.append(self.center_text(mode_info, strip_ansi=True) + newline)
         output_buffer.append(newline)
@@ -204,12 +208,24 @@ class CLITypingTest:
         accuracy, wpm = self.engine.calculate_stats()
         theme_color = self.hex_to_ansi(self.engine.accent_color)
         
+        # Get personal best BEFORE saving to compare correctly
+        pb = self.engine.get_personal_best()
+        
         # Save test result to history
         self.engine.save_test_result(accuracy, wpm)
         
-        # Get personal best
-        pb = self.engine.get_personal_best()
-        is_new_pb = pb and wpm > pb.get("wpm", 0) if pb else True
+        # Check if this is a new personal best
+        # A new PB is set if:
+        # 1. First test for this mode/difficulty, OR
+        # 2. WPM is higher, OR
+        # 3. WPM is equal but accuracy is better
+        is_new_pb = False
+        if pb is None:
+            is_new_pb = True
+        elif wpm > pb.get("wpm", 0):
+            is_new_pb = True
+        elif wpm == pb.get("wpm", 0) and accuracy > pb.get("accuracy", 0):
+            is_new_pb = True
 
         # Determine colors
         if accuracy >= 95:
@@ -226,19 +242,17 @@ class CLITypingTest:
         else:
             wpm_color = "\033[91m"
 
-        content_lines = [
-            f"\033[90mwpm\033[0m {wpm_color}{wpm:.0f}",
-            f"\033[90macc\033[0m {acc_color}{accuracy:.0f}%",
-        ]
+        content_lines = []
         
         # Show personal best or new record
-        if is_new_pb and pb:
-            content_lines.append("")
+        if is_new_pb:
             content_lines.append(f"{theme_color}✦ New Personal Best ✦\033[0m")
         elif pb:
-            content_lines.append("")
-            content_lines.append(f"\033[90mPB: {pb['wpm']:.0f} WPM\033[0m")
+            content_lines.append(f"\033[90mBest: {pb['wpm']:.0f} WPM\033[0m")
         
+        content_lines.append("")
+        content_lines.append(f"\033[90mwpm\033[0m {wpm_color}{wpm:.0f}")
+        content_lines.append(f"\033[90macc\033[0m {acc_color}{accuracy:.0f}%")
         content_lines.append("")
         content_lines.append("\033[90mpress enter to continue\033[0m")
 
@@ -439,56 +453,6 @@ class CLITypingTest:
             self.initial_render = True
         except Exception:
             pass
-    
-    def export_history(self):
-        """Export test history to CSV"""
-        try:
-            from datetime import datetime
-            filename = f"typing_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            if self.engine.export_history_csv(filename):
-                message = f"\033[92mExported to {filename}\033[0m"
-            else:
-                message = "\033[91mNo history to export\033[0m"
-            
-            self.move_cursor_home()
-            self.clear_from_cursor()
-            v_padding = self.get_vertical_padding(3)
-            newline = "\r\n" if os.name != "nt" else "\n"
-            
-            output_buffer = []
-            output_buffer.append(newline * v_padding)
-            output_buffer.append(self.center_text(message, strip_ansi=True) + newline)
-            output_buffer.append(newline)
-            output_buffer.append(self.center_text("\033[90mpress enter to continue\033[0m", strip_ansi=True))
-            
-            print("".join(output_buffer), end="", flush=True)
-            
-            # Wait for Enter
-            if os.name != "nt":
-                import tty
-                import termios
-                fd = sys.stdin.fileno()
-                old_settings = termios.tcgetattr(fd)
-                try:
-                    tty.setraw(sys.stdin.fileno())
-                    while True:
-                        char = sys.stdin.read(1)
-                        if char == "\r" or char == "\n":
-                            break
-                finally:
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-            else:
-                import msvcrt
-                while True:
-                    if msvcrt.kbhit():
-                        char = msvcrt.getch()
-                        if char == b"\r":
-                            break
-            
-            self.initial_render = True
-        except Exception as e:
-            print(f"Error: {e}")
-            pass
 
     def run(self):
         """Main game loop"""
@@ -522,6 +486,12 @@ class CLITypingTest:
                         self.render()
                         last_input_len = len(self.engine.user_input)
                     
+                    # Periodic render to update timer (every 0.5 seconds)
+                    current_time = time.time()
+                    if self.engine.started and (current_time - self.last_render_time) >= 0.5:
+                        self.last_render_time = current_time
+                        self.render()
+                    
                     # Check if time is up
                     if self.engine.started and self.engine.is_time_up():
                         self.show_results()
@@ -553,9 +523,6 @@ class CLITypingTest:
                                 last_input_len = -1
                             elif char == b"\x14":  # Ctrl+T
                                 self.change_theme()
-                                last_input_len = -1
-                            elif char == b"\x05":  # Ctrl+E
-                                self.export_history()
                                 last_input_len = -1
                             elif char == b"\x08":  # Backspace
                                 if self.engine.user_input:
@@ -619,9 +586,6 @@ class CLITypingTest:
                                 last_input_len = -1
                             elif char == "\x14":  # Ctrl+T
                                 self.change_theme()
-                                last_input_len = -1
-                            elif char == "\x05":  # Ctrl+E
-                                self.export_history()
                                 last_input_len = -1
                             elif char == "\x7f" or char == "\x08":  # Backspace
                                 if self.engine.user_input:
