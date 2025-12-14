@@ -85,10 +85,13 @@
 - [ ] Memory profiling and optimization
 
 ### Configuration Expansion
-Current `config.json` only stores theme. Expand to:
-- [ ] Default mode and difficulty preferences
-- [ ] Sound settings
+Current `config.json` includes:
+- [x] Default mode and difficulty preferences
+- [x] Theme persistence
+
+Expand to:
 - [ ] Content width (CLI)
+- [ ] Sound settings
 - [ ] Custom key bindings
 - [ ] Auto-save interval
 - [ ] Language preference for content

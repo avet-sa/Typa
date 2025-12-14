@@ -33,12 +33,18 @@ class TypingTestEngine:
                 with open(self.config_path, "r") as f:
                     config = json.load(f)
                     self.accent_color = config.get("theme", "#22c55e")
+                    self.mode = config.get("mode", "words")
+                    self.difficulty = config.get("difficulty", "25" if self.mode == "words" else "medium")
         except Exception:
             pass
 
     def save_config(self):
         try:
-            config = {"theme": self.accent_color}
+            config = {
+                "theme": self.accent_color,
+                "mode": self.mode,
+                "difficulty": self.difficulty
+            }
             with open(self.config_path, "w") as f:
                 json.dump(config, f, indent=4)
         except Exception:
@@ -56,10 +62,12 @@ class TypingTestEngine:
             self.difficulty = "25"
         else:
             self.difficulty = "medium"
+        self.save_config()
         self.generate_text()
 
     def set_difficulty(self, difficulty):
         self.difficulty = difficulty
+        self.save_config()
         self.generate_text()
 
     def set_accent_color(self, color):
