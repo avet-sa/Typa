@@ -320,7 +320,7 @@ class TypingTest(QWidget):
 
         self.resultsShortcutsLabel.setText(
             f"<span style='color: {c};'>tab</span> <span style='color: #9ca3af;'>next test</span> &nbsp;&nbsp; "
-            f"<span style='color: #6b7280;'>esc</span> <span style='color: #9ca3af;'>quit</span>"
+            f"<span style='color: {c};'>esc</span> <span style='color: #9ca3af;'>quit</span>"
         )
 
     def changeMode(self, mode):
@@ -373,13 +373,22 @@ class TypingTest(QWidget):
 
     def updateLiveStats(self):
         if self.engine.started:
+            # Check if time is up
+            if self.engine.is_time_up():
+                accuracy, wpm = self.engine.calculate_stats()
+                self.results_ready.emit(accuracy, wpm)
+                return
+            
             accuracy, wpm = self.engine.calculate_stats()
+            time_remaining = int(self.engine.get_time_remaining())
             c = self.current_theme
             self.statsLabel.setText(
-                f"acc: <span style='color:{c}'>{int(accuracy)}%</span>   wpm: <span style='color:{c}'>{int(wpm)}</span>"
+                f"<span style='color: #9ca3af'>time: </span> <span style='color:{c}'>{time_remaining}s</span>   <span style='color: #9ca3af'>acc: </span> <span style='color:{c}'>{int(accuracy)}%</span>   <span style='color: #9ca3af'>wpm: </span> <span style='color:{c}'>{int(wpm)}</span>"
             )
         else:
-            self.statsLabel.setText("")
+            time_limit = int(self.engine.time_limit)
+            c = self.current_theme
+            self.statsLabel.setText(f"<span style='color: #9ca3af'>time: </span> <span style='color:{c}'>{time_limit}s</span>")
 
     def showResults(self, accuracy, wpm):
         # Determine colors based on performance

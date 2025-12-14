@@ -24,6 +24,7 @@ class TypingTestEngine:
         self.user_input = ""
         self.started = False
         self.start_time = 0
+        self.time_limit = 60  # Default 60 seconds
 
         self.generate_text()
 
@@ -73,6 +74,26 @@ class TypingTestEngine:
     def set_accent_color(self, color):
         self.accent_color = color
         self.save_config()
+    
+    def get_time_limit(self):
+        """Get time limit in seconds based on mode and difficulty"""
+        if self.mode == "words":
+            word_count = int(self.difficulty)
+            if word_count <= 10:
+                return 30
+            elif word_count <= 25:
+                return 60
+            elif word_count <= 50:
+                return 90
+            else:  # 100 words
+                return 120
+        else:  # quotes mode
+            if self.difficulty == "short":
+                return 45
+            elif self.difficulty == "medium":
+                return 60
+            else:  # long
+                return 90
 
     def generate_text(self):
         if self.mode == "words":
@@ -100,6 +121,7 @@ class TypingTestEngine:
 
             self.current_text = random.choice(filtered_quotes)
 
+        self.time_limit = self.get_time_limit()
         self.reset_input()
 
     def start(self):
@@ -111,6 +133,20 @@ class TypingTestEngine:
         self.user_input = ""
         self.started = False
         self.start_time = 0
+    
+    def is_time_up(self):
+        """Check if the time limit has been reached"""
+        if not self.started:
+            return False
+        elapsed = time.time() - self.start_time
+        return elapsed >= self.time_limit
+    
+    def get_time_remaining(self):
+        """Get remaining time in seconds"""
+        if not self.started:
+            return self.time_limit
+        elapsed = time.time() - self.start_time
+        return max(0, self.time_limit - elapsed)
 
     def calculate_stats(self):
         if not self.started or not self.user_input:

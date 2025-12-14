@@ -150,9 +150,11 @@ class CLITypingTest:
         # Stats
         if self.engine.started:
             accuracy, wpm = self.engine.calculate_stats()
-            stats = f"\033[90mwpm\033[0m {theme_color}{wpm:.0f}\033[0m  \033[90macc\033[0m {theme_color}{accuracy:.0f}%\033[0m"
+            time_remaining = int(self.engine.get_time_remaining())
+            stats = f"\033[90mtime\033[0m {theme_color}{time_remaining}s\033[0m  \033[90mwpm\033[0m {theme_color}{wpm:.0f}\033[0m  \033[90macc\033[0m {theme_color}{accuracy:.0f}%\033[0m"
         else:
-            stats = "\033[90mstart typing...\033[0m"
+            time_limit = int(self.engine.time_limit)
+            stats = f"\033[90mtime\033[0m {theme_color}{time_limit}s\033[0m  \033[90mstart typing...\033[0m"
         content_lines.append(stats)
 
         # Use flicker-free rendering technique
@@ -454,6 +456,12 @@ class CLITypingTest:
                         self.render()
                         last_input_len = len(self.engine.user_input)
                     
+                    # Check if time is up
+                    if self.engine.started and self.engine.is_time_up():
+                        self.show_results()
+                        last_input_len = -1
+                        continue
+                    
                     if os.name == "nt":
                         # Windows
                         if msvcrt.kbhit():
@@ -587,6 +595,7 @@ class CLITypingTest:
             newline = "\r\n" if os.name != "nt" else "\n"
             print(newline * v_padding, end="", flush=True)
             print(self.center_text("\033[90mgoodbye\033[0m\n"), end="", flush=True)
+            print(newline * v_padding, end="", flush=True)
 
 if __name__ == "__main__":
     app = CLITypingTest()
