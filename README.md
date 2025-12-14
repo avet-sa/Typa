@@ -4,10 +4,12 @@ A fast, polished, cross-platform typing test featuring:
 
 - **CLI Mode** (beautiful ANSI rendering)
 - **GUI Mode** (PyQt6)
-- Real-time statistics
+- Real-time statistics with countdown timer
 - Words / Quotes modes
 - Difficulty levels
 - Live WPM and accuracy tracking
+- **Test history tracking** with personal bests
+- **Export to CSV** for analysis
 - Config auto-saving  
 - Terminal size safety + centered warnings
 
@@ -60,10 +62,11 @@ project/
 | Action             | Keys        |
 |-------------------|-------------|
 | Restart test      | **Ctrl+R**  |
-| Next text         | **Ctrl+T**  |
 | Switch mode       | **Ctrl+M**  |
-| Quit              | **Ctrl+D**  |
-| Backspace         | Backspace   |
+| Change difficulty | **Ctrl+D**  |
+| Change theme      | **Ctrl+T**  |
+| Export history    | **Ctrl+E**  |
+| Quit              | **Ctrl+C**  |
 
 
 ## 🎯 Modes & Difficulty
@@ -77,18 +80,32 @@ project/
 Controls text length and density.
 
 
+## 📊 Statistics & History
+
+Every completed test is automatically saved to `history.json` including:
+- Timestamp
+- WPM and accuracy scores
+- Mode and difficulty used
+- Text length and typed characters
+
+### Personal Bests
+The app tracks your highest WPM for each mode/difficulty combination and displays:
+- 🏆 **New Personal Best!** when you beat your previous record
+- Your current PB when viewing results
+
+### Export
+Press **Ctrl+E** in CLI mode to export your complete test history to CSV format for further analysis.
+
 
 ## 📁 Assets
 
 Place your custom text sources here:
 
 ```
-
 assets/
 words.txt
 quotes.txt
-
-````
+```
 
 Simple plain-text lists work perfectly.
 

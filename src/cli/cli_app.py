@@ -186,7 +186,7 @@ class CLITypingTest:
 
         # Footer
         mode_info = f"\033[90m{self.engine.mode} \033[37m|\033[90m {self.engine.difficulty}\033[0m"
-        shortcuts = f"{theme_color}^M\033[0m mode  {theme_color}^D\033[0m difficulty  {theme_color}^T\033[0m theme  {theme_color}^R\033[0m restart  {theme_color}^C\033[0m quit"
+        shortcuts = f"{theme_color}^M\033[0m mode  {theme_color}^D\033[0m difficulty  {theme_color}^T\033[0m theme  {theme_color}^R\033[0m restart  {theme_color}^E\033[0m export  {theme_color}^C\033[0m quit"
 
         output_buffer.append(self.center_text(mode_info, strip_ansi=True) + newline)
         output_buffer.append(newline)
@@ -203,6 +203,13 @@ class CLITypingTest:
         """Display minimal results with flicker-free rendering"""
         accuracy, wpm = self.engine.calculate_stats()
         theme_color = self.hex_to_ansi(self.engine.accent_color)
+        
+        # Save test result to history
+        self.engine.save_test_result(accuracy, wpm)
+        
+        # Get personal best
+        pb = self.engine.get_personal_best()
+        is_new_pb = pb and wpm > pb.get("wpm", 0) if pb else True
 
         # Determine colors
         if accuracy >= 95:
@@ -222,9 +229,18 @@ class CLITypingTest:
         content_lines = [
             f"\033[90mwpm\033[0m {wpm_color}{wpm:.0f}",
             f"\033[90macc\033[0m {acc_color}{accuracy:.0f}%",
-            "",
-            "\033[90mpress enter to continue\033[0m",
         ]
+        
+        # Show personal best or new record
+        if is_new_pb and pb:
+            content_lines.append("")
+            content_lines.append(f"{theme_color}✦ New Personal Best ✦\033[0m")
+        elif pb:
+            content_lines.append("")
+            content_lines.append(f"\033[90mPB: {pb['wpm']:.0f} WPM\033[0m")
+        
+        content_lines.append("")
+        content_lines.append("\033[90mpress enter to continue\033[0m")
 
         self.move_cursor_home()
         self.clear_from_cursor()
@@ -423,6 +439,56 @@ class CLITypingTest:
             self.initial_render = True
         except Exception:
             pass
+    
+    def export_history(self):
+        """Export test history to CSV"""
+        try:
+            from datetime import datetime
+            filename = f"typing_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            if self.engine.export_history_csv(filename):
+                message = f"\033[92mExported to {filename}\033[0m"
+            else:
+                message = "\033[91mNo history to export\033[0m"
+            
+            self.move_cursor_home()
+            self.clear_from_cursor()
+            v_padding = self.get_vertical_padding(3)
+            newline = "\r\n" if os.name != "nt" else "\n"
+            
+            output_buffer = []
+            output_buffer.append(newline * v_padding)
+            output_buffer.append(self.center_text(message, strip_ansi=True) + newline)
+            output_buffer.append(newline)
+            output_buffer.append(self.center_text("\033[90mpress enter to continue\033[0m", strip_ansi=True))
+            
+            print("".join(output_buffer), end="", flush=True)
+            
+            # Wait for Enter
+            if os.name != "nt":
+                import tty
+                import termios
+                fd = sys.stdin.fileno()
+                old_settings = termios.tcgetattr(fd)
+                try:
+                    tty.setraw(sys.stdin.fileno())
+                    while True:
+                        char = sys.stdin.read(1)
+                        if char == "\r" or char == "\n":
+                            break
+                finally:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            else:
+                import msvcrt
+                while True:
+                    if msvcrt.kbhit():
+                        char = msvcrt.getch()
+                        if char == b"\r":
+                            break
+            
+            self.initial_render = True
+        except Exception as e:
+            print(f"Error: {e}")
+            pass
 
     def run(self):
         """Main game loop"""
@@ -488,6 +554,9 @@ class CLITypingTest:
                             elif char == b"\x14":  # Ctrl+T
                                 self.change_theme()
                                 last_input_len = -1
+                            elif char == b"\x05":  # Ctrl+E
+                                self.export_history()
+                                last_input_len = -1
                             elif char == b"\x08":  # Backspace
                                 if self.engine.user_input:
                                     last_idx = len(self.engine.user_input) - 1
@@ -550,6 +619,9 @@ class CLITypingTest:
                                 last_input_len = -1
                             elif char == "\x14":  # Ctrl+T
                                 self.change_theme()
+                                last_input_len = -1
+                            elif char == "\x05":  # Ctrl+E
+                                self.export_history()
                                 last_input_len = -1
                             elif char == "\x7f" or char == "\x08":  # Backspace
                                 if self.engine.user_input:

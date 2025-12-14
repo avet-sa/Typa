@@ -391,6 +391,13 @@ class TypingTest(QWidget):
             self.statsLabel.setText(f"<span style='color: #9ca3af'>time: </span> <span style='color:{c}'>{time_limit}s</span>")
 
     def showResults(self, accuracy, wpm):
+        # Save test result to history
+        self.engine.save_test_result(accuracy, wpm)
+        
+        # Get personal best
+        pb = self.engine.get_personal_best()
+        is_new_pb = pb and wpm > pb.get("wpm", 0) if pb else True
+        
         # Determine colors based on performance
         if accuracy >= 95:
             acc_color = "#22c55e"  # Green
@@ -406,10 +413,18 @@ class TypingTest(QWidget):
         else:
             wpm_color = "#ef4444"  # Red
 
-        self.accuracyLabel.setText(
-            f"Accuracy: <span style='color:{acc_color}'>{accuracy:.2f}%</span>"
-        )
-        self.wpmLabel.setText(f"WPM: <span style='color:{wpm_color}'>{wpm:.2f}</span>")
+        # Build results text
+        acc_text = f"Accuracy: <span style='color:{acc_color}'>{accuracy:.2f}%</span>"
+        wpm_text = f"WPM: <span style='color:{wpm_color}'>{wpm:.2f}</span>"
+        
+        # Add personal best info
+        if is_new_pb and pb:
+            acc_text += f"<br/><span style='color:{self.current_theme}'>🏆 New Personal Best!</span>"
+        elif pb:
+            acc_text += f"<br/><span style='color:#9ca3af'>PB: {pb['wpm']:.2f} WPM</span>"
+        
+        self.accuracyLabel.setText(acc_text)
+        self.wpmLabel.setText(wpm_text)
         self.stackedWidget.setCurrentWidget(self.resultsScreen)
 
     def restart(self):

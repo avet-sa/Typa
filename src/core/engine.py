@@ -14,6 +14,7 @@ class TypingTestEngine:
         self.words = self.load_file(os.path.join(project_root, "assets", "words.txt"))
         self.quotes = self.load_file(os.path.join(project_root, "assets", "quotes.txt"))
         self.config_path = os.path.join(project_root, "config.json")
+        self.history_path = os.path.join(project_root, "history.json")
 
         self.mode = "words"
         self.difficulty = "25"
@@ -56,6 +57,132 @@ class TypingTestEngine:
             return []
         with open(filename, "r", encoding="utf-8") as f:
             return [line.strip() for line in f if line.strip()]
+    
+    def load_history(self):
+        """Load test history from JSON file"""
+        try:
+            if os.path.exists(self.history_path):
+                with open(self.history_path, "r") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {"tests": [], "personal_bests": {}}
+    
+    def save_test_result(self, accuracy, wpm):
+        """Save test result to history with timestamp"""
+        try:
+            history = self.load_history()
+            
+            # Create test record
+            from datetime import datetime
+            test_record = {
+                "timestamp": datetime.now().isoformat(),
+                "mode": self.mode,
+                "difficulty": self.difficulty,
+                "wpm": round(wpm, 2),
+                "accuracy": round(accuracy, 2),
+                "time_limit": self.time_limit,
+                "text_length": len(self.current_text),
+                "typed_length": len(self.user_input)
+            }
+            
+            # Add to history
+            history["tests"].append(test_record)
+            
+            # Update personal best for this mode/difficulty
+            key = f"{self.mode}_{self.difficulty}"
+            current_best = history["personal_bests"].get(key, {"wpm": 0})
+            if wpm > current_best.get("wpm", 0):
+                history["personal_bests"][key] = {
+                    "wpm": round(wpm, 2),
+                    "accuracy": round(accuracy, 2),
+                    "timestamp": test_record["timestamp"]
+                }
+            
+            # Save to file
+            with open(self.history_path, "w") as f:
+                json.dump(history, f, indent=4)
+            
+            return True
+        except Exception as e:
+            print(f"Error saving test result: {e}")
+            return False
+    
+    def get_personal_best(self, mode=None, difficulty=None):
+        """Get personal best for specific mode/difficulty or current settings"""
+        try:
+            history = self.load_history()
+            mode = mode or self.mode
+            difficulty = difficulty or self.difficulty
+            key = f"{mode}_{difficulty}"
+            return history["personal_bests"].get(key)
+        except Exception:
+            return None
+    
+    def get_test_history(self, limit=None, mode=None, difficulty=None):
+        """Get test history, optionally filtered and limited"""
+        try:
+            history = self.load_history()
+            tests = history["tests"]
+            
+            # Filter by mode/difficulty if specified
+            if mode:
+                tests = [t for t in tests if t["mode"] == mode]
+            if difficulty:
+                tests = [t for t in tests if t["difficulty"] == difficulty]
+            
+            # Sort by timestamp (newest first)
+            tests.sort(key=lambda x: x["timestamp"], reverse=True)
+            
+            # Limit results if specified
+            if limit:
+                tests = tests[:limit]
+            
+            return tests
+        except Exception:
+            return []
+    
+    def get_statistics(self):
+        """Get overall statistics from test history"""
+        try:
+            tests = self.get_test_history()
+            if not tests:
+                return None
+            
+            total_tests = len(tests)
+            avg_wpm = sum(t["wpm"] for t in tests) / total_tests
+            avg_accuracy = sum(t["accuracy"] for t in tests) / total_tests
+            best_wpm = max(t["wpm"] for t in tests)
+            best_accuracy = max(t["accuracy"] for t in tests)
+            
+            return {
+                "total_tests": total_tests,
+                "average_wpm": round(avg_wpm, 2),
+                "average_accuracy": round(avg_accuracy, 2),
+                "best_wpm": round(best_wpm, 2),
+                "best_accuracy": round(best_accuracy, 2)
+            }
+        except Exception:
+            return None
+    
+    def export_history_csv(self, filepath):
+        """Export test history to CSV file"""
+        try:
+            import csv
+            tests = self.get_test_history()
+            
+            if not tests:
+                return False
+            
+            with open(filepath, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=tests[0].keys())
+                writer.writeheader()
+                writer.writerows(tests)
+            
+            return True
+        except Exception as e:
+            print(f"Error exporting to CSV: {e}")
+            return False
 
     def set_mode(self, mode):
         self.mode = mode

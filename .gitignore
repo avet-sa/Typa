@@ -17,4 +17,6 @@ build/
 *.so
 *.pyd
 config.json
+history.json
+typing_history_*.csv
 improvements.md
