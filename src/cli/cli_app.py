@@ -106,8 +106,13 @@ class CLITypingTest:
         # Clear warning flag since we're rendering normal content
         self.warning_shown = False
         
-        # Timer display (above text)
+        # Paused indicator (above timer if paused)
         theme_color = self.hex_to_ansi(self.engine.accent_color)
+        if getattr(self.engine, "paused", False):
+            content_lines.append("\033[93mPAUSED\033[0m")
+            content_lines.append("")  # Empty line after paused text
+        
+        # Timer display (above text)
         if self.engine.started:
             time_remaining = int(self.engine.get_time_remaining())
             timer_display = f"{theme_color}{time_remaining}s\033[0m"
@@ -199,7 +204,7 @@ class CLITypingTest:
 
         # Footer
         mode_info = f"\033[90m{self.engine.mode} \033[37m|\033[90m {self.engine.difficulty}\033[0m"
-        shortcuts = f"{theme_color}^M\033[0m mode  {theme_color}^D\033[0m difficulty  {theme_color}^T\033[0m theme  {theme_color}^R\033[0m restart  {theme_color}^C\033[0m quit"
+        shortcuts = f"{theme_color}^M\033[0m mode  {theme_color}^D\033[0m difficulty  {theme_color}^T\033[0m theme  {theme_color}^R\033[0m restart  {theme_color}^C\033[0m quit  {theme_color}^P\033[0m {"resume" if self.engine.paused else "pause"}"
 
         output_buffer.append(self.center_text(mode_info, strip_ansi=True) + newline)
         output_buffer.append(newline)
@@ -533,6 +538,14 @@ class CLITypingTest:
                             elif char == b"\x14":  # Ctrl+T
                                 self.change_theme()
                                 last_input_len = -1
+                            elif char == b"\x10":  # Ctrl+P pause/resume
+                                if self.engine.started:
+                                    if self.engine.paused:
+                                        self.engine.resume()
+                                    else:
+                                        self.engine.pause()
+                                    self.render()
+                                last_input_len = -1
                             elif char == b"\x08":  # Backspace
                                 if self.engine.user_input:
                                     last_idx = len(self.engine.user_input) - 1
@@ -547,7 +560,10 @@ class CLITypingTest:
                             else:
                                 try:
                                     text = char.decode("utf-8")
-                                    if text.isprintable() and len(text) == 1:
+                                    # Block typing while paused
+                                    if self.engine.paused:
+                                        pass
+                                    elif text.isprintable() and len(text) == 1:
                                         current_index = len(self.engine.user_input)
                                         if current_index < len(
                                             self.engine.current_text
@@ -596,6 +612,14 @@ class CLITypingTest:
                             elif char == "\x14":  # Ctrl+T
                                 self.change_theme()
                                 last_input_len = -1
+                            elif char == "\x10":  # Ctrl+P pause/resume
+                                if self.engine.started:
+                                    if self.engine.paused:
+                                        self.engine.resume()
+                                    else:
+                                        self.engine.pause()
+                                    self.render()
+                                last_input_len = -1
                             elif char == "\x7f" or char == "\x08":  # Backspace
                                 if self.engine.user_input:
                                     last_idx = len(self.engine.user_input) - 1
@@ -607,6 +631,8 @@ class CLITypingTest:
                                         self.engine.user_input = self.engine.user_input[
                                             :-1
                                         ]
+                            elif self.engine.paused:
+                                pass
                             elif char.isprintable():
                                 current_index = len(self.engine.user_input)
                                 if current_index < len(self.engine.current_text):

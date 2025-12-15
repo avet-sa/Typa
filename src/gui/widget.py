@@ -233,6 +233,13 @@ class TypingTest(QWidget):
         # Removed initial color stylesheet
         layout.addWidget(self.statsLabel)
 
+        # Paused indicator
+        self.pausedLabel = QLabel()
+        self.pausedLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pausedLabel.setFont(QFont("Cascadia Mono", 12, QFont.Weight.Bold))
+        self.pausedLabel.setStyleSheet("color: #eab308")  # yellow
+        layout.addWidget(self.pausedLabel)
+
         # Shortcut guide
         self.shortcutsLabel = QLabel()
         self.shortcutsLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -330,11 +337,9 @@ class TypingTest(QWidget):
         # Update Control Panel
         self.updateControlPanel()
 
-        # Update Live Stats Color - Removed to allow HTML formatting
-        # self.statsLabel.setStyleSheet(f"color: {c};")
-
         # Update Shortcuts
         self.shortcutsLabel.setText(
+            f"<span style='color: {c};'>Ctrl+P</span> <span style='color: #9ca3af;'>{'resume' if self.engine.paused else 'pause'}</span> &nbsp;&nbsp;"
             f"<span style='color: {c};'>tab</span> <span style='color: #9ca3af;'>restart</span> &nbsp;&nbsp; "
             f"<span style='color: {c};'>esc</span> <span style='color: #9ca3af;'>quit</span>"
         )
@@ -426,12 +431,19 @@ class TypingTest(QWidget):
             self.statsLabel.setText(
                 f"<span style='color: #9ca3af'>acc: </span> <span style='color:{c}'>{int(accuracy)}%</span>   <span style='color: #9ca3af'>wpm: </span> <span style='color:{c}'>{int(wpm)}</span>"
             )
+
+            # Paused indicator
+            if self.engine.paused:
+                self.pausedLabel.setText("PAUSED")
+            else:
+                self.pausedLabel.setText("")
         else:
             time_limit = int(self.engine.time_limit)
             c = self.current_theme
             # Timer shows time limit before test starts
             self.timerLabel.setText(f"<span style='color:{c}'>{time_limit}s</span>")
             self.statsLabel.setText("")
+            self.pausedLabel.setText("")
 
     def showResults(self, accuracy, wpm):
         # Get personal best BEFORE saving to compare correctly
@@ -502,9 +514,25 @@ class TypingTest(QWidget):
             self.restart()
             return
 
+        # Toggle pause/resume with Ctrl+P
+        if key == Qt.Key.Key_P and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if self.engine.started:
+                if self.engine.paused:
+                    self.engine.resume()
+                else:
+                    self.engine.pause()
+                # Update UI immediately
+                self.updateLiveStats()
+                self.updateThemeColors()
+            return
+
         if self.stackedWidget.currentWidget() == self.resultsScreen:
             if key in [Qt.Key.Key_Enter, Qt.Key.Key_Return, Qt.Key.Key_Space]:
                 self.restart()
+            return
+
+        # Block typing while paused
+        if self.engine.paused:
             return
 
         # Typing logic

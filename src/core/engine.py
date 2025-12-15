@@ -26,6 +26,9 @@ class TypingTestEngine:
         self.started = False
         self.start_time = 0
         self.time_limit = 60  # Default 60 seconds
+        self.paused = False
+        self.pause_started_at = 0
+        self.total_pause_duration = 0
 
         self.generate_text()
 
@@ -246,30 +249,63 @@ class TypingTestEngine:
         if not self.started:
             self.started = True
             self.start_time = time.time()
+            self.paused = False
+            self.pause_started_at = 0
+            self.total_pause_duration = 0
 
     def reset_input(self):
         self.user_input = ""
         self.started = False
         self.start_time = 0
+        self.paused = False
+        self.pause_started_at = 0
+        self.total_pause_duration = 0
     
     def is_time_up(self):
         """Check if the time limit has been reached"""
         if not self.started:
             return False
-        elapsed = time.time() - self.start_time
+        if self.paused:
+            return False
+        elapsed = time.time() - self.start_time - self.total_pause_duration
         return elapsed >= self.time_limit
     
     def get_time_remaining(self):
         """Get remaining time in seconds"""
         if not self.started:
             return self.time_limit
-        elapsed = time.time() - self.start_time
+        if self.paused:
+            # When paused, freeze remaining time
+            elapsed = self.pause_started_at - self.start_time - self.total_pause_duration
+        else:
+            elapsed = time.time() - self.start_time - self.total_pause_duration
         return max(0, self.time_limit - elapsed)
+
+    def pause(self):
+        """Pause the timer and typing state"""
+        if self.started and not self.paused:
+            self.paused = True
+            
+            self.pause_started_at = time.time()
+
+    def resume(self):
+        """Resume from paused state"""
+        if self.started and self.paused:
+            self.paused = False
+            if self.pause_started_at:
+                self.total_pause_duration += time.time() - self.pause_started_at
+                self.pause_started_at = 0
 
     def calculate_stats(self):
         if not self.started or not self.user_input:
             return 0.0, 0.0
-        minutes = max((time.time() - self.start_time) / 60.0, 0.001)
+        # Calculate elapsed time excluding pause duration
+        if self.paused:
+            # Use time up to when pause started
+            elapsed = self.pause_started_at - self.start_time - self.total_pause_duration
+        else:
+            elapsed = time.time() - self.start_time - self.total_pause_duration
+        minutes = max(elapsed / 60.0, 0.001)
         min_len = min(len(self.user_input), len(self.current_text))
         correct = sum(
             1 for i in range(min_len) if self.user_input[i] == self.current_text[i]
