@@ -4,9 +4,16 @@ import os
 import time
 import shutil
 from src.core.engine import TypingTestEngine
+from src.core.presentation import (
+    colorize_char_for_cli,
+    wrong_char_for_cli,
+    wrong_space_for_cli,
+    untyped_char_for_cli,
+    current_char_for_cli,
+)
 
 if os.name != "nt":
-    import fcntl  # For non-blocking input on Linux
+    import fcntl
 
 class CLITypingTest:
     def __init__(self):
@@ -14,14 +21,46 @@ class CLITypingTest:
         self.running = True
         self.content_width = 50
         self.MIN_W, self.MIN_H = 60, 15
-        self.last_render_lines = 0  # Track number of lines rendered
+        self.last_render_lines = 0
         self.initial_render = True
-        self.last_term_size = (0, 0)  # Track terminal size for resize detection
-        self.warning_shown = False  # Track if terminal size warning is being displayed
-        self.last_render_time = 0  # Track last render time for periodic updates
-        self.cursor_hidden = False  # Track cursor visibility state
-        
-        
+        self.last_term_size = (0, 0)
+        self.warning_shown = False
+        self.last_render_time = 0
+        self.cursor_hidden = False
+        self._test_ending = False  # Guard against double-trigger (timer + completion)
+
+        # Subscribe to engine callbacks
+        self.engine.on_char_typed = self._on_char_typed
+        self.engine.on_stats_updated = self._on_stats_updated
+        self.engine.on_test_complete = self._on_test_complete
+
+        # Flags for callback-driven updates
+        self._needs_render = False
+        self._needs_full_render = True
+
+    def _on_char_typed(self):
+        """Callback: fired when a character is typed"""
+        self._needs_render = True
+
+    def _on_stats_updated(self, state):
+        """Callback: fired when stats update (for live WPM/accuracy)"""
+        self._needs_render = True
+
+    def _on_test_complete(self, result):
+        """Callback: fired when test finishes."""
+        if self._test_ending:
+            return
+        self._test_ending = True
+
+        should_continue = self._show_results_from_result(result)
+        if should_continue:
+            self.engine.generate_text()
+            self._needs_full_render = True
+            self._needs_render = True
+            self._test_ending = False
+        else:
+            self.running = False
+
     def hide_cursor(self):
         """Hide terminal cursor"""
         if not self.cursor_hidden:
@@ -40,22 +79,17 @@ class CLITypingTest:
             cols, rows = int(size.columns), int(size.lines)
             return cols, rows
         except Exception:
-            return 80, 24  # Default fallback size
+            return 80, 24
 
     def show_terminal_size_warning(self, cols, rows, min_cols, min_rows):
-        """
-        Display a visible warning if terminal is smaller than recommended size.
-        Non-intrusive: shown only once at the top. 
-        """
         self.warning_shown = True
         warning = f"⚠ Terminal too small\nCurrent: {cols}×{rows}\nRecommended: {min_cols}×{min_rows}"
         lines = [line.center(cols) for line in warning.split("\n")]
 
-        # Vertical centering: calculate how many blank lines above it
         total_lines = len(lines)
         top_padding = max((rows - total_lines) // 2, 0)
 
-        print("\033[2J\033[H")  # clear screen
+        print("\033[2J\033[H")
         print("\n" * top_padding)
         for line in lines:
             print(line)
@@ -63,11 +97,7 @@ class CLITypingTest:
     def center_text(self, text, strip_ansi=False):
         """Center text horizontally"""
         term_width, _ = self.get_terminal_size()
-        # For ANSI colored text, calculate visible length
         if strip_ansi:
-            import re
-
-            # Strip all ANSI escape sequences (more comprehensive pattern)
             visible_text = re.sub(r"\033\[[0-9;]*[mGKHf]", "", text)
             visible_len = len(visible_text)
         else:
@@ -91,57 +121,42 @@ class CLITypingTest:
         return padding
 
     def clear_screen(self):
-        """Clear screen using ANSI escape codes - only for initial render"""
+        """Clear screen using ANSI escape codes"""
         print("\033[2J\033[H", end="", flush=True)
-    
-    def move_cursor_home(self):
-        """Move cursor to home position without clearing screen"""
-        print("\033[H", end="", flush=True)
-    
-    def clear_from_cursor(self):
-        """Clear from cursor to end of screen"""
-        print("\033[J", end="", flush=True)
 
     def render(self):
         """Render minimal centered UI without flickering"""
-        
-        # Update render time
         self.last_render_time = time.time()
-        
-        # Build content first to count lines
         content_lines = []
 
         term_width, term_height = self.get_terminal_size()
 
-        # Show visible warning if too small
         if term_width < self.MIN_W or term_height < self.MIN_H:
             self.show_terminal_size_warning(term_width, term_height, self.MIN_W, self.MIN_H)
             return
-        
-        # Clear warning flag since we're rendering normal content
+
         self.warning_shown = False
-        
-        # Paused indicator (above timer if paused)
+
         theme_color = self.hex_to_ansi(self.engine.accent_color)
-        if getattr(self.engine, "paused", False):
+
+        # Paused indicator
+        if self.engine.paused:
             content_lines.append("\033[93mPAUSED\033[0m")
-            content_lines.append("")  # Empty line after paused text
-        
-        # Timer display (above text)
+            content_lines.append("")
+
+        # Timer display
         if self.engine.started:
             time_remaining = int(self.engine.get_time_remaining())
             timer_display = f"{theme_color}{time_remaining}s\033[0m"
         else:
             time_limit = int(self.engine.time_limit)
             timer_display = f"{theme_color}{time_limit}s\033[0m"
-        
-        content_lines.append(timer_display)
-        content_lines.append("")  # Empty line after timer
-        
-        # Tokenize text into words and separators
-        tokens = re.split(r"(\s+)", self.engine.current_text)
 
-        # Build lines respecting max width
+        content_lines.append(timer_display)
+        content_lines.append("")
+
+        # Tokenize and build lines
+        tokens = re.split(r"(\s+)", self.engine.current_text)
         lines = []
         current_line = ""
         max_width = self.content_width
@@ -149,8 +164,6 @@ class CLITypingTest:
         for token in tokens:
             if not token:
                 continue
-
-            # If adding token exceeds max width and current line is not empty, start new line
             if len(current_line) + len(token) > max_width and current_line:
                 lines.append(current_line)
                 current_line = token
@@ -160,7 +173,7 @@ class CLITypingTest:
         if current_line:
             lines.append(current_line)
 
-        # Colorize each line
+        # Colorize each line using presentation helpers
         global_idx = 0
 
         for line_text in lines:
@@ -169,20 +182,21 @@ class CLITypingTest:
                 if global_idx < len(self.engine.user_input):
                     typed = self.engine.user_input[global_idx]
                     if typed == c:
-                        line_chars.append(f"{theme_color}{c}\033[0m")
+                        line_chars.append(colorize_char_for_cli(c, self.engine.accent_color))
+                    elif c == " ":
+                        line_chars.append(wrong_space_for_cli())
                     else:
-                        display_char = "·" if (typed != " " and c == " ") else c
-                        line_chars.append(f"\033[91m{display_char}\033[0m")
+                        line_chars.append(wrong_char_for_cli(c))
                 elif global_idx == len(self.engine.user_input):
-                    line_chars.append(f"\033[4m{c}\033[0m")
+                    line_chars.append(current_char_for_cli(c))
                 else:
-                    line_chars.append(f"\033[90m{c}\033[0m")
+                    line_chars.append(untyped_char_for_cli(c))
                 global_idx += 1
             content_lines.append("".join(line_chars))
 
-        content_lines.append("")  # Empty line
+        content_lines.append("")
 
-        # Stats (wpm and accuracy only, no time)
+        # Stats
         if self.engine.started:
             accuracy, wpm = self.engine.calculate_stats()
             stats = f"\033[90mwpm\033[0m {theme_color}{wpm:.0f}\033[0m  \033[90macc\033[0m {theme_color}{accuracy:.0f}%\033[0m"
@@ -190,32 +204,25 @@ class CLITypingTest:
             stats = f"\033[90mstart typing...\033[0m"
         content_lines.append(stats)
 
-        # Build entire output as atomic operation to prevent flicker
         if self.initial_render:
             self.initial_render = False
 
-        # Add vertical padding
         v_padding = self.get_vertical_padding(len(content_lines))
-
-        # Use proper line endings
         newline = "\r\n" if os.name != "nt" else "\n"
 
-        # Build output buffer - include cursor positioning and clear in same print
         output_buffer = []
-        output_buffer.append("\033[H\033[J")  # Home + clear atomically
+        output_buffer.append("\033[H\033[J")
         output_buffer.append(newline * v_padding)
 
-        # Print centered content
         for line in content_lines:
             if line == "":
                 output_buffer.append(newline)
-            elif "wpm" in line or "start typing" in line:  # Stats line
+            elif "wpm" in line or "start typing" in line:
                 output_buffer.append(self.center_text(line, strip_ansi=True) + newline)
-            else:  # Text lines or timer
+            else:
                 output_buffer.append(self.center_text(line, strip_ansi=True) + newline)
         output_buffer.append(newline)
 
-        # Footer
         mode_info = f"\033[90m{self.engine.mode} \033[37m|\033[90m {self.engine.difficulty}\033[0m"
         shortcuts = f"{theme_color}^M\033[0m mode  {theme_color}^D\033[0m difficulty  {theme_color}^T\033[0m theme  {theme_color}^R\033[0m restart  {theme_color}^C\033[0m quit  {theme_color}^P\033[0m {"resume" if self.engine.paused else "pause"}"
 
@@ -223,71 +230,147 @@ class CLITypingTest:
         output_buffer.append(newline)
         output_buffer.append(self.center_text(shortcuts, strip_ansi=True))
 
-        # Write all at once
         print("".join(output_buffer), end="", flush=True)
-        
-        # Track lines rendered for next update
         self.last_render_lines = len(content_lines) + 3
+        self._needs_render = False
+        self._needs_full_render = False
 
-    def show_results(self):
-        """Display minimal results with flicker-free rendering"""
-        accuracy, wpm = self.engine.calculate_stats()
+    def _render_wpm_graph(self, wpm_history: list, width: int = 30) -> list[str]:
+        """
+        Render a WPM over time bar chart using Unicode block characters.
+        Returns list of lines (top to bottom) for the graph.
+
+        Uses ▁▂▃▄▅▆▇█ block elements for smooth bar tops.
+        """
+        if not wpm_history or len(wpm_history) < 2:
+            return ["\033[90mnot enough data for graph\033[0m"]
+
+        wpm_values = [wpm for _, wpm in wpm_history]
+        max_wpm = max(wpm_values)
+
+        if max_wpm == 0:
+            return ["\033[90mno data\033[0m"]
+
+        blocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
         theme_color = self.hex_to_ansi(self.engine.accent_color)
-        
-        # Get personal best BEFORE saving to compare correctly
-        pb = self.engine.get_personal_best()
-        
-        # Save test result to history
-        self.engine.save_test_result(accuracy, wpm)
-        
-        # Check if this is a new personal best
-        # A new PB is set if:
-        # 1. First test for this mode/difficulty, OR
-        # 2. WPM is higher, OR
-        # 3. WPM is equal but accuracy is better
-        is_new_pb = False
-        if pb is None:
-            is_new_pb = True
-        elif wpm > pb.get("wpm", 0):
-            is_new_pb = True
-        elif wpm == pb.get("wpm", 0) and accuracy > pb.get("accuracy", 0):
-            is_new_pb = True
+        graph_height = 5
+
+        # Sample to fit width
+        if len(wpm_values) > width:
+            step = len(wpm_values) / width
+            sampled = [wpm_values[int(i * step)] for i in range(width)]
+        else:
+            sampled = wpm_values
+
+        bar_count = len(sampled)
+
+        # Round y_max to nice number
+        if max_wpm <= 10:
+            y_max = 10
+        elif max_wpm <= 50:
+            y_max = 50
+        elif max_wpm <= 100:
+            y_max = 100
+        elif max_wpm <= 150:
+            y_max = 150
+        else:
+            y_max = ((max_wpm // 50) + 1) * 50
+
+        # Calculate bar levels (0-5 scale)
+        bar_levels = [(wpm / y_max) * graph_height for wpm in sampled]
+
+        graph_lines = []
+
+        # Build each row from top (row=5) to bottom (row=1)
+        for row in range(graph_height, 0, -1):
+            # Y-axis label
+            y_top = (row / graph_height) * y_max
+            if row == graph_height:
+                label = f"{int(y_top):>4}"
+            elif row == 1:
+                label = f"{int(y_top):>4}"
+            else:
+                label = "    "
+
+            line_parts = [f"\033[90m{label}\033[0m "]
+
+            for i, bar_level in enumerate(bar_levels):
+                if bar_level >= row + 1:
+                    # Bar fully covers this row - solid block
+                    line_parts.append(f"{theme_color}█\033[0m")
+                elif bar_level >= row:
+                    # Bar top is at this row - use fractional block
+                    frac = bar_level - row  # 0.0 to 1.0
+                    idx = int(frac * 7)  # 0-7 -> blocks index
+                    # When frac is ~0, use ▁; when ~1, use █
+                    block = blocks[min(idx, 6)] if frac < 1.0 else blocks[7]
+                    line_parts.append(f"{theme_color}{block}\033[0m")
+                else:
+                    line_parts.append(" ")
+
+            graph_lines.append("".join(line_parts))
+
+        # X-axis line
+        x_axis = "     " + "─" * bar_count
+        graph_lines.append(f"\033[90m{x_axis}\033[0m")
+
+        # Time labels
+        total_time = wpm_history[-1][0]
+        time_label_end = f"{int(total_time)}s"
+        padding = max(0, bar_count - len(time_label_end))
+        time_str = f"     \033[90m0{' ' * padding}{time_label_end}\033[0m"
+        graph_lines.append(time_str)
+
+        # Final WPM
+        final_wpm = wpm_values[-1]
+        graph_lines.append(f"     \033[90mwpm: {int(final_wpm)}\033[0m")
+
+        return graph_lines
+
+    def _show_results_from_result(self, result):
+        """Display results from TestResult object (callback-driven)"""
+        theme_color = self.hex_to_ansi(self.engine.accent_color)
 
         # Determine colors
-        if accuracy >= 95:
+        if result.accuracy >= 95:
             acc_color = theme_color
-        elif accuracy >= 90:
+        elif result.accuracy >= 90:
             acc_color = "\033[93m"
         else:
             acc_color = "\033[91m"
 
-        if wpm >= 60:
+        if result.wpm >= 60:
             wpm_color = theme_color
-        elif wpm >= 30:
+        elif result.wpm >= 30:
             wpm_color = "\033[93m"
         else:
             wpm_color = "\033[91m"
 
         content_lines = []
-        
+
         # Show personal best or new record
-        if is_new_pb:
+        if result.is_new_personal_best:
             content_lines.append(f"{theme_color}✦ New Personal Best ✦\033[0m")
-        elif pb:
-            content_lines.append(f"\033[90mBest: {pb['wpm']:.0f} WPM\033[0m")
-        
+        elif result.personal_best:
+            content_lines.append(f"\033[90mBest: {result.personal_best['wpm']:.0f} WPM\033[0m")
+
         content_lines.append("")
-        content_lines.append(f"\033[90mwpm\033[0m {wpm_color}{wpm:.0f}")
-        content_lines.append(f"\033[90macc\033[0m {acc_color}{accuracy:.0f}%")
+
+        # Render WPM graph
+        graph_lines = self._render_wpm_graph(result.wpm_history)
+        content_lines.extend(graph_lines)
+        content_lines.append("")
+
+        content_lines.append(f"\033[90mwpm\033[0m {wpm_color}{result.wpm:.0f}")
+        content_lines.append(f"\033[90macc\033[0m {acc_color}{result.accuracy:.0f}%")
         content_lines.append("")
         content_lines.append("\033[90mpress enter to continue\033[0m")
 
         v_padding = self.get_vertical_padding(len(content_lines))
         newline = "\r\n" if os.name != "nt" else "\n"
 
-        # Build atomic output buffer
         output_buffer = []
-        output_buffer.append("\033[H\033[J")  # Home + clear atomically
+        output_buffer.append("\033[H\033[J")
         output_buffer.append(newline * v_padding)
 
         for line in content_lines:
@@ -295,8 +378,8 @@ class CLITypingTest:
 
         print("".join(output_buffer), end="", flush=True)
 
+        # Wait for Enter — just returns True to continue, False to quit
         try:
-            # Wait for Enter key in raw mode
             if os.name != "nt":
                 import tty
                 import termios
@@ -307,19 +390,33 @@ class CLITypingTest:
                     tty.setraw(sys.stdin.fileno())
                     while True:
                         char = sys.stdin.read(1)
-                        if char == "\r" or char == "\n":  # Enter key
-                            break
-                        elif char == "\x03":  # Ctrl+C
-                            raise KeyboardInterrupt
+                        if char == "\r" or char == "\n":
+                            return True  # Continue to next test
+                        elif char == "\x03":
+                            return False  # Quit
                 finally:
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
             else:
-                input()
-
-            self.engine.generate_text()
-            self.run()
+                try:
+                    input()
+                    return True  # Continue
+                except KeyboardInterrupt:
+                    return False  # Quit
         except KeyboardInterrupt:
-            self.running = False
+            return False  # Quit
+
+    def show_results(self):
+        """Display results by finishing test and letting callback handle display."""
+        result = self.engine.finish_test()
+        # Callback _on_test_complete handles _show_results_from_result
+
+    def _check_test_complete(self):
+        """Check if all characters are typed and end test."""
+        if self._test_ending:
+            return
+        if self.engine.started and not self.engine.paused:
+            if len(self.engine.user_input) == len(self.engine.current_text):
+                self.show_results()
 
     def get_input(self, prompt="› "):
         """Custom input loop for centered, responsive input"""
@@ -331,13 +428,11 @@ class CLITypingTest:
             import termios
 
         while True:
-            # Render prompt and buffer centered
             term_width, _ = self.get_terminal_size()
             full_text = f"{prompt}{buffer}"
             max_width = self.content_width
 
             if len(full_text) > max_width:
-                # Scroll text if it exceeds content width
                 visible_text = full_text[-max_width:]
             else:
                 visible_text = full_text
@@ -345,18 +440,17 @@ class CLITypingTest:
             padding = (term_width - len(visible_text)) // 2
             line = " " * max(0, padding) + visible_text
 
-            # Move cursor to start of line, clear line, print centered text
             print(f"\r\033[K{line}", end="", flush=True)
 
             if os.name == "nt":
                 if msvcrt.kbhit():
                     char = msvcrt.getch()
-                    if char == b"\x03":  # Ctrl+C
+                    if char == b"\x03":
                         raise KeyboardInterrupt
-                    elif char == b"\r":  # Enter
-                        print()  # Newline after input
+                    elif char == b"\r":
+                        print()
                         return buffer
-                    elif char == b"\x08":  # Backspace
+                    elif char == b"\x08":
                         buffer = buffer[:-1]
                     else:
                         try:
@@ -372,12 +466,12 @@ class CLITypingTest:
                 try:
                     tty.setraw(sys.stdin.fileno())
                     char = sys.stdin.read(1)
-                    if char == "\x03":  # Ctrl+C
+                    if char == "\x03":
                         raise KeyboardInterrupt
-                    elif char == "\r" or char == "\n":  # Enter
+                    elif char == "\r" or char == "\n":
                         print()
                         return buffer
-                    elif char == "\x7f" or char == "\x08":  # Backspace
+                    elif char == "\x7f" or char == "\x08":
                         buffer = buffer[:-1]
                     elif char.isprintable():
                         buffer += char
@@ -395,10 +489,9 @@ class CLITypingTest:
         selected = 0
         previous_selected = 0
         theme_color = self.hex_to_ansi(self.engine.accent_color)
-        needs_render = True  # Full render needed
-        menu_layout = {}  # Cache layout for incremental updates
+        needs_render = True
+        menu_layout = {}
 
-        # Set raw mode for Linux
         if os.name != "nt":
             fd = sys.stdin.fileno()
             old_settings = termios.tcgetattr(fd)
@@ -408,28 +501,27 @@ class CLITypingTest:
                 pass
 
         def build_menu_layout():
-            """Build and cache the complete menu layout"""
             nonlocal menu_layout
-            
             term_width, _ = self.get_terminal_size()
-            
-            # Find the longest option to determine menu width
-            max_option_len = max(len(opt.split(None, 1)[1] if len(opt.split(None, 1)) > 1 else opt) for opt in options)
+
+            max_option_len = max(
+                len(opt.split(None, 1)[1] if len(opt.split(None, 1)) > 1 else opt)
+                for opt in options
+            )
             menu_width = max(max_option_len, len(title))
             left_padding = (term_width - menu_width) // 2
-            
-            # Calculate vertical padding
+
             total_lines = 1 + 1 + len(options) + 1
             v_padding = self.get_vertical_padding(total_lines)
-            
+
             layout = {
                 'v_padding': v_padding,
                 'left_padding': left_padding,
                 'title_line': v_padding,
-                'options_start': v_padding + 2,  # Title + blank line
+                'options_start': v_padding + 2,
                 'options': []
             }
-            
+
             for i, opt in enumerate(options):
                 opt_text = opt.split(None, 1)[1] if len(opt.split(None, 1)) > 1 else opt
                 layout['options'].append({
@@ -438,39 +530,31 @@ class CLITypingTest:
                     'unselected': f"  {opt_text}",
                     'selected': f"{theme_color}› {opt_text}\033[0m"
                 })
-            
+
             layout['footer_line'] = layout['options_start'] + len(options) + 1
             return layout
 
         def render_option(line_num, option_data, is_selected):
-            """Render a single option line at specific position"""
             layout = menu_layout
-            # Move cursor to the specific line and column
             print(f"\033[{line_num + 1};{layout['left_padding'] + 1}H", end="", flush=True)
             text = option_data['selected'] if is_selected else option_data['unselected']
-            # Clear the rest of the line and print
             print(f"\033[K{text}", end="", flush=True)
 
         try:
             while True:
-                # Full render when needed
                 if needs_render:
                     menu_layout = build_menu_layout()
-                    
                     newline = "\r\n" if os.name != "nt" else "\n"
 
-                    # Build entire output including screen clear as atomic operation
                     output_buffer = []
-                    output_buffer.append("\033[H\033[J")  # Home cursor + clear screen
+                    output_buffer.append("\033[H\033[J")
                     output_buffer.append(newline * menu_layout['v_padding'])
-                    
-                    # Center title
+
                     title_text = f"\033[90m{title}\033[0m"
                     title_padding = menu_layout['left_padding'] + (len(menu_layout['options'][0]['text']) - len(title)) // 2
                     output_buffer.append(" " * title_padding + title_text + newline)
                     output_buffer.append(newline)
 
-                    # Render options
                     for i, opt_data in enumerate(menu_layout['options']):
                         text = opt_data['selected'] if i == selected else opt_data['unselected']
                         output_buffer.append(" " * menu_layout['left_padding'] + text + newline)
@@ -482,45 +566,43 @@ class CLITypingTest:
                     needs_render = False
                     previous_selected = selected
 
-                # Handle input
                 if os.name == "nt":
                     if msvcrt.kbhit():
                         char = msvcrt.getch()
-                        if char == b"\x03":  # Ctrl+C
+                        if char == b"\x03":
                             raise KeyboardInterrupt
-                        elif char == b"\x1b":  # Escape
+                        elif char == b"\x1b":
                             return None
-                        elif char == b"\r":  # Enter
+                        elif char == b"\r":
                             return str(selected + 1)
-                        elif char == b"\xe0" or char == b"\x00":  # Arrow key prefix on Windows
+                        elif char == b"\xe0" or char == b"\x00":
                             arrow = msvcrt.getch()
-                            if arrow == b"H":  # Up arrow
+                            if arrow == b"H":
                                 previous_selected = selected
                                 selected = (selected - 1) % len(options)
-                            elif arrow == b"P":  # Down arrow
+                            elif arrow == b"P":
                                 previous_selected = selected
                                 selected = (selected + 1) % len(options)
-                        elif char == b"\x48":  # Up arrow (some terminals)
+                        elif char == b"\x48":
                             previous_selected = selected
                             selected = (selected - 1) % len(options)
-                        elif char == b"\x50":  # Down arrow (some terminals)
+                        elif char == b"\x50":
                             previous_selected = selected
                             selected = (selected + 1) % len(options)
-                        
-                        # Incremental update for arrow keys
+
                         if previous_selected != selected:
-                            render_option(menu_layout['options'][previous_selected]['line'], 
+                            render_option(menu_layout['options'][previous_selected]['line'],
                                         menu_layout['options'][previous_selected], False)
-                            render_option(menu_layout['options'][selected]['line'], 
+                            render_option(menu_layout['options'][selected]['line'],
                                         menu_layout['options'][selected], True)
                             previous_selected = selected
-                            
+
                     time.sleep(0.02)
                 else:
                     char = sys.stdin.read(1)
-                    if char == "\x03":  # Ctrl+C
+                    if char == "\x03":
                         raise KeyboardInterrupt
-                    elif char == "\x1b":  # Escape or arrow key
+                    elif char == "\x1b":
                         fd = sys.stdin.fileno()
                         old_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
                         fcntl.fcntl(fd, fcntl.F_SETFL, old_flags | os.O_NONBLOCK)
@@ -535,8 +617,7 @@ class CLITypingTest:
                             elif seq == "[B":
                                 previous_selected = selected
                                 selected = (selected + 1) % len(options)
-                            
-                            # Incremental update
+
                             if previous_selected != selected:
                                 render_option(menu_layout['options'][previous_selected]['line'],
                                             menu_layout['options'][previous_selected], False)
@@ -551,7 +632,6 @@ class CLITypingTest:
                         return str(selected + 1)
 
         finally:
-            # Restore terminal settings on Linux
             if os.name != "nt":
                 try:
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -566,7 +646,8 @@ class CLITypingTest:
                 self.engine.set_mode("words")
             elif choice == "2":
                 self.engine.set_mode("quotes")
-            self.initial_render = True
+            self._needs_full_render = True
+            self._needs_render = True
         except Exception:
             pass
 
@@ -587,7 +668,8 @@ class CLITypingTest:
 
             if choice in diff_map:
                 self.engine.set_difficulty(diff_map[choice])
-            self.initial_render = True
+            self._needs_full_render = True
+            self._needs_render = True
         except Exception:
             pass
 
@@ -619,7 +701,8 @@ class CLITypingTest:
 
             if choice in theme_map:
                 self.engine.set_accent_color(theme_map[choice])
-            self.initial_render = True
+            self._needs_full_render = True
+            self._needs_render = True
         except Exception:
             pass
 
@@ -632,22 +715,20 @@ class CLITypingTest:
             import termios
             import select
 
-        # For Linux, set up terminal once at the start
         if os.name != "nt":
             fd = sys.stdin.fileno()
             old_settings = termios.tcgetattr(fd)
 
         try:
-            # Set raw mode for Linux
             if os.name != "nt":
                 tty.setraw(sys.stdin.fileno())
 
-            # Hide cursor (only once)
             self.hide_cursor()
 
+            # Initial render
+            self._needs_full_render = True
             self.render()
             self.last_term_size = self.get_terminal_size()
-            last_input_len = 0
 
             while self.running:
                 try:
@@ -655,164 +736,106 @@ class CLITypingTest:
                     current_term_size = self.get_terminal_size()
                     if current_term_size != self.last_term_size:
                         self.last_term_size = current_term_size
-                        self.render()
-                        last_input_len = len(self.engine.user_input)
-                    
-                    # Periodic render to update timer (every 0.5 seconds)
+                        self._needs_full_render = True
+                        self._needs_render = True
+
+                    # Periodic render for timer updates (only if test is running)
                     current_time = time.time()
-                    if self.engine.started and (current_time - self.last_render_time) >= 0.5:
-                        self.last_render_time = current_time
-                        self.render()
-                    
+                    if self.engine.started and not self.engine.paused:
+                        if (current_time - self.last_render_time) >= 0.5:
+                            self._needs_render = True
+
                     # Check if time is up
-                    if self.engine.started and self.engine.is_time_up():
+                    if self.engine.started and self.engine.is_time_up() and not self._test_ending:
                         self.show_results()
-                        last_input_len = -1
                         continue
-                    
+
+                    # Render if needed
+                    if self._needs_render:
+                        if self._needs_full_render:
+                            self.initial_render = True
+                        self.render()
+
+                    # Handle input
                     if os.name == "nt":
-                        # Windows
                         if msvcrt.kbhit():
                             char = msvcrt.getch()
 
-                            # Skip all input processing if warning is shown
                             if self.warning_shown:
-                                if char == b"\x03":  # Still allow Ctrl+C to quit
+                                if char == b"\x03":
                                     raise KeyboardInterrupt
                                 continue
 
-                            if char == b"\x03":  # Ctrl+C
+                            if char == b"\x03":
                                 raise KeyboardInterrupt
                             elif char == b"\x12":  # Ctrl+R
                                 self.engine.generate_text()
-                                self.initial_render = True
-                                last_input_len = -1  # Force re-render
+                                self._needs_full_render = True
+                                self._needs_render = True
                             elif char == b"\x0d":  # Ctrl+M
                                 self.change_mode()
                                 self.hide_cursor()
-                                last_input_len = -1
                             elif char == b"\x04":  # Ctrl+D
                                 self.change_difficulty()
                                 self.hide_cursor()
-                                last_input_len = -1
                             elif char == b"\x14":  # Ctrl+T
                                 self.change_theme()
                                 self.hide_cursor()
-                                last_input_len = -1
-                            elif char == b"\x10":  # Ctrl+P pause/resume
+                            elif char == b"\x10":  # Ctrl+P
                                 if self.engine.started:
                                     if self.engine.paused:
                                         self.engine.resume()
                                     else:
                                         self.engine.pause()
-                                    self.render()
-                                last_input_len = -1
+                                    self._needs_render = True
                             elif char == b"\x08":  # Backspace
-                                if self.engine.user_input:
-                                    last_idx = len(self.engine.user_input) - 1
-                                    is_correct_space = (
-                                        self.engine.user_input[-1] == " "
-                                        and self.engine.current_text[last_idx] == " "
-                                    )
-                                    if not is_correct_space:
-                                        self.engine.user_input = self.engine.user_input[
-                                            :-1
-                                        ]
+                                self.engine.delete_character()
                             else:
                                 try:
                                     text = char.decode("utf-8")
-                                    # Block typing while paused
-                                    if self.engine.paused:
-                                        pass
-                                    elif text.isprintable() and len(text) == 1:
-                                        current_index = len(self.engine.user_input)
-                                        if current_index < len(
-                                            self.engine.current_text
-                                        ):
-                                            self.engine.user_input += text
-                                            if not self.engine.started:
-                                                self.engine.start()
+                                    if text.isprintable() and len(text) == 1:
+                                        self.engine.type_character(text)
+                                        self._check_test_complete()
                                 except UnicodeDecodeError:
                                     pass
 
-                            # Only re-render if input changed or forced
-                            if len(self.engine.user_input) != last_input_len:
-                                self.render()
-                                last_input_len = len(self.engine.user_input)
-
-                            if len(self.engine.user_input) == len(
-                                self.engine.current_text
-                            ):
-                                self.show_results()
-                                last_input_len = -1  # Force re-render on restart
-
                     else:
-                        # Unix/Linux - non-blocking check
                         rlist, _, _ = select.select([sys.stdin], [], [], 0)
                         if rlist:
                             char = sys.stdin.read(1)
 
-                            # Skip all input processing if warning is shown
                             if self.warning_shown:
-                                if char == "\x03":  # Still allow Ctrl+C to quit
+                                if char == "\x03":
                                     raise KeyboardInterrupt
                                 continue
 
-                            if char == "\x03":  # Ctrl+C
+                            if char == "\x03":
                                 raise KeyboardInterrupt
                             elif char == "\x12":  # Ctrl+R
                                 self.engine.generate_text()
-                                self.initial_render = True
-                                last_input_len = -1
+                                self._needs_full_render = True
+                                self._needs_render = True
                             elif char == "\x0d":  # Ctrl+M
                                 self.change_mode()
                                 self.hide_cursor()
-                                last_input_len = -1
                             elif char == "\x04":  # Ctrl+D
                                 self.change_difficulty()
                                 self.hide_cursor()
-                                last_input_len = -1
                             elif char == "\x14":  # Ctrl+T
                                 self.change_theme()
                                 self.hide_cursor()
-                                last_input_len = -1
-                            elif char == "\x10":  # Ctrl+P pause/resume
+                            elif char == "\x10":  # Ctrl+P
                                 if self.engine.started:
                                     if self.engine.paused:
                                         self.engine.resume()
                                     else:
                                         self.engine.pause()
-                                    self.render()
-                                last_input_len = -1
+                                    self._needs_render = True
                             elif char == "\x7f" or char == "\x08":  # Backspace
-                                if self.engine.user_input:
-                                    last_idx = len(self.engine.user_input) - 1
-                                    is_correct_space = (
-                                        self.engine.user_input[-1] == " "
-                                        and self.engine.current_text[last_idx] == " "
-                                    )
-                                    if not is_correct_space:
-                                        self.engine.user_input = self.engine.user_input[
-                                            :-1
-                                        ]
-                            elif self.engine.paused:
-                                pass
+                                self.engine.delete_character()
                             elif char.isprintable():
-                                current_index = len(self.engine.user_input)
-                                if current_index < len(self.engine.current_text):
-                                    self.engine.user_input += char
-                                    if not self.engine.started:
-                                        self.engine.start()
-
-                            if len(self.engine.user_input) != last_input_len:
-                                self.render()
-                                last_input_len = len(self.engine.user_input)
-
-                            if len(self.engine.user_input) == len(
-                                self.engine.current_text
-                            ):
-                                self.show_results()
-                                last_input_len = -1
+                                self.engine.type_character(char)
+                                self._check_test_complete()
 
                     time.sleep(0.01)
 
@@ -820,21 +843,17 @@ class CLITypingTest:
                     self.running = False
                     break
         finally:
-            # Restore cursor
             self.show_cursor()
-            
-            # Restore terminal settings on Linux
+
             if os.name != "nt":
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
-            # Show goodbye message - properly centered
+            # Goodbye message
             self.clear_screen()
             newline = "\r\n" if os.name != "nt" else "\n"
             v_padding = self.get_vertical_padding(1)
             print(newline * v_padding, end="", flush=True)
             goodbye_text = "\033[90mgoodbye\033[0m"
-
-            # FIX: Added + newline here to satisfy the shell requirements
             print(self.center_text(goodbye_text, strip_ansi=True) + newline, end="", flush=True)
 
 if __name__ == "__main__":
