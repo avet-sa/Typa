@@ -1,9 +1,12 @@
+import re
 import sys
 import os
 import time
 import shutil
 from src.core.engine import TypingTestEngine
 
+if os.name != "nt":
+    import fcntl  # For non-blocking input on Linux
 
 class CLITypingTest:
     def __init__(self):
@@ -16,8 +19,21 @@ class CLITypingTest:
         self.last_term_size = (0, 0)  # Track terminal size for resize detection
         self.warning_shown = False  # Track if terminal size warning is being displayed
         self.last_render_time = 0  # Track last render time for periodic updates
+        self.cursor_hidden = False  # Track cursor visibility state
         
         
+    def hide_cursor(self):
+        """Hide terminal cursor"""
+        if not self.cursor_hidden:
+            print("\033[?25l", end="", flush=True)
+            self.cursor_hidden = True
+
+    def show_cursor(self):
+        """Show terminal cursor"""
+        if self.cursor_hidden:
+            print("\033[?25h", end="", flush=True)
+            self.cursor_hidden = False
+
     def get_terminal_size(self):
         try:
             size = shutil.get_terminal_size()
@@ -88,7 +104,6 @@ class CLITypingTest:
 
     def render(self):
         """Render minimal centered UI without flickering"""
-        import re
         
         # Update render time
         self.last_render_time = time.time()
@@ -175,21 +190,19 @@ class CLITypingTest:
             stats = f"\033[90mstart typing...\033[0m"
         content_lines.append(stats)
 
-        # Use flicker-free rendering technique
+        # Build entire output as atomic operation to prevent flicker
         if self.initial_render:
-            self.clear_screen()  # Only clear on first render
             self.initial_render = False
-        else:
-            self.move_cursor_home()  # Move to top without clearing
 
         # Add vertical padding
         v_padding = self.get_vertical_padding(len(content_lines))
 
-        # Use proper line endings for Linux in raw mode
+        # Use proper line endings
         newline = "\r\n" if os.name != "nt" else "\n"
-        
-        # Build entire output as a single string to minimize flicker
+
+        # Build output buffer - include cursor positioning and clear in same print
         output_buffer = []
+        output_buffer.append("\033[H\033[J")  # Home + clear atomically
         output_buffer.append(newline * v_padding)
 
         # Print centered content
@@ -209,9 +222,8 @@ class CLITypingTest:
         output_buffer.append(self.center_text(mode_info, strip_ansi=True) + newline)
         output_buffer.append(newline)
         output_buffer.append(self.center_text(shortcuts, strip_ansi=True))
-        
-        # Clear from cursor to end and write all at once
-        self.clear_from_cursor()
+
+        # Write all at once
         print("".join(output_buffer), end="", flush=True)
         
         # Track lines rendered for next update
@@ -270,14 +282,18 @@ class CLITypingTest:
         content_lines.append("")
         content_lines.append("\033[90mpress enter to continue\033[0m")
 
-        self.move_cursor_home()
-        self.clear_from_cursor()
         v_padding = self.get_vertical_padding(len(content_lines))
         newline = "\r\n" if os.name != "nt" else "\n"
-        print(newline * v_padding, end="", flush=True)
+
+        # Build atomic output buffer
+        output_buffer = []
+        output_buffer.append("\033[H\033[J")  # Home + clear atomically
+        output_buffer.append(newline * v_padding)
 
         for line in content_lines:
-            print(self.center_text(line, strip_ansi=True), end=newline, flush=True)
+            output_buffer.append(self.center_text(line, strip_ansi=True) + newline)
+
+        print("".join(output_buffer), end="", flush=True)
 
         try:
             # Wait for Enter key in raw mode
@@ -369,39 +385,178 @@ class CLITypingTest:
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
     def show_menu(self, title, options):
-        """Generic centered menu with flicker-free rendering and aligned options"""
-        self.move_cursor_home()
-        self.clear_from_cursor()
+        """Generic centered menu with arrow key navigation"""
+        if os.name == "nt":
+            import msvcrt
+        else:
+            import tty
+            import termios
 
-        # Calculate total lines: title + blank + options + blank + prompt
-        total_lines = 1 + 1 + len(options) + 1 + 1
-        v_padding = self.get_vertical_padding(total_lines)
+        selected = 0
+        previous_selected = 0
+        theme_color = self.hex_to_ansi(self.engine.accent_color)
+        needs_render = True  # Full render needed
+        menu_layout = {}  # Cache layout for incremental updates
 
-        newline = "\r\n" if os.name != "nt" else "\n"
-        term_width, _ = self.get_terminal_size()
-        
-        # Find the longest option to determine menu width
-        max_option_len = max(len(opt) for opt in options)
-        menu_width = max(max_option_len, len(title))
-        
-        # Calculate left padding to center the menu block
-        left_padding = (term_width - menu_width) // 2
-        
-        output_buffer = []
-        output_buffer.append(newline * v_padding)
-        # Center title
-        title_text = f"\033[90m{title}\033[0m"
-        title_padding = left_padding + (menu_width - len(title)) // 2
-        output_buffer.append(" " * title_padding + title_text + newline)
-        output_buffer.append(newline)
-        # Left-align options within the centered menu block
-        for opt in options:
-            output_buffer.append(" " * left_padding + opt + newline)
-        output_buffer.append(newline)
-        
-        print("".join(output_buffer), end="", flush=True)
+        # Set raw mode for Linux
+        if os.name != "nt":
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(sys.stdin.fileno())
+            except:
+                pass
 
-        return self.get_input()
+        def build_menu_layout():
+            """Build and cache the complete menu layout"""
+            nonlocal menu_layout
+            
+            term_width, _ = self.get_terminal_size()
+            
+            # Find the longest option to determine menu width
+            max_option_len = max(len(opt.split(None, 1)[1] if len(opt.split(None, 1)) > 1 else opt) for opt in options)
+            menu_width = max(max_option_len, len(title))
+            left_padding = (term_width - menu_width) // 2
+            
+            # Calculate vertical padding
+            total_lines = 1 + 1 + len(options) + 1
+            v_padding = self.get_vertical_padding(total_lines)
+            
+            layout = {
+                'v_padding': v_padding,
+                'left_padding': left_padding,
+                'title_line': v_padding,
+                'options_start': v_padding + 2,  # Title + blank line
+                'options': []
+            }
+            
+            for i, opt in enumerate(options):
+                opt_text = opt.split(None, 1)[1] if len(opt.split(None, 1)) > 1 else opt
+                layout['options'].append({
+                    'line': layout['options_start'] + i,
+                    'text': opt_text,
+                    'unselected': f"  {opt_text}",
+                    'selected': f"{theme_color}› {opt_text}\033[0m"
+                })
+            
+            layout['footer_line'] = layout['options_start'] + len(options) + 1
+            return layout
+
+        def render_option(line_num, option_data, is_selected):
+            """Render a single option line at specific position"""
+            layout = menu_layout
+            # Move cursor to the specific line and column
+            print(f"\033[{line_num + 1};{layout['left_padding'] + 1}H", end="", flush=True)
+            text = option_data['selected'] if is_selected else option_data['unselected']
+            # Clear the rest of the line and print
+            print(f"\033[K{text}", end="", flush=True)
+
+        try:
+            while True:
+                # Full render when needed
+                if needs_render:
+                    menu_layout = build_menu_layout()
+                    
+                    newline = "\r\n" if os.name != "nt" else "\n"
+
+                    # Build entire output including screen clear as atomic operation
+                    output_buffer = []
+                    output_buffer.append("\033[H\033[J")  # Home cursor + clear screen
+                    output_buffer.append(newline * menu_layout['v_padding'])
+                    
+                    # Center title
+                    title_text = f"\033[90m{title}\033[0m"
+                    title_padding = menu_layout['left_padding'] + (len(menu_layout['options'][0]['text']) - len(title)) // 2
+                    output_buffer.append(" " * title_padding + title_text + newline)
+                    output_buffer.append(newline)
+
+                    # Render options
+                    for i, opt_data in enumerate(menu_layout['options']):
+                        text = opt_data['selected'] if i == selected else opt_data['unselected']
+                        output_buffer.append(" " * menu_layout['left_padding'] + text + newline)
+
+                    output_buffer.append(newline)
+                    output_buffer.append(self.center_text(f"\033[90m↑ ↓ navigate • enter select • esc cancel\033[0m", strip_ansi=True))
+
+                    print("".join(output_buffer), end="", flush=True)
+                    needs_render = False
+                    previous_selected = selected
+
+                # Handle input
+                if os.name == "nt":
+                    if msvcrt.kbhit():
+                        char = msvcrt.getch()
+                        if char == b"\x03":  # Ctrl+C
+                            raise KeyboardInterrupt
+                        elif char == b"\x1b":  # Escape
+                            return None
+                        elif char == b"\r":  # Enter
+                            return str(selected + 1)
+                        elif char == b"\xe0" or char == b"\x00":  # Arrow key prefix on Windows
+                            arrow = msvcrt.getch()
+                            if arrow == b"H":  # Up arrow
+                                previous_selected = selected
+                                selected = (selected - 1) % len(options)
+                            elif arrow == b"P":  # Down arrow
+                                previous_selected = selected
+                                selected = (selected + 1) % len(options)
+                        elif char == b"\x48":  # Up arrow (some terminals)
+                            previous_selected = selected
+                            selected = (selected - 1) % len(options)
+                        elif char == b"\x50":  # Down arrow (some terminals)
+                            previous_selected = selected
+                            selected = (selected + 1) % len(options)
+                        
+                        # Incremental update for arrow keys
+                        if previous_selected != selected:
+                            render_option(menu_layout['options'][previous_selected]['line'], 
+                                        menu_layout['options'][previous_selected], False)
+                            render_option(menu_layout['options'][selected]['line'], 
+                                        menu_layout['options'][selected], True)
+                            previous_selected = selected
+                            
+                    time.sleep(0.02)
+                else:
+                    char = sys.stdin.read(1)
+                    if char == "\x03":  # Ctrl+C
+                        raise KeyboardInterrupt
+                    elif char == "\x1b":  # Escape or arrow key
+                        fd = sys.stdin.fileno()
+                        old_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                        fcntl.fcntl(fd, fcntl.F_SETFL, old_flags | os.O_NONBLOCK)
+
+                        try:
+                            seq = sys.stdin.read(2)
+                            if not seq:
+                                return None
+                            if seq == "[A":
+                                previous_selected = selected
+                                selected = (selected - 1) % len(options)
+                            elif seq == "[B":
+                                previous_selected = selected
+                                selected = (selected + 1) % len(options)
+                            
+                            # Incremental update
+                            if previous_selected != selected:
+                                render_option(menu_layout['options'][previous_selected]['line'],
+                                            menu_layout['options'][previous_selected], False)
+                                render_option(menu_layout['options'][selected]['line'],
+                                            menu_layout['options'][selected], True)
+                                previous_selected = selected
+                        except EOFError:
+                            return None
+                        finally:
+                            fcntl.fcntl(fd, fcntl.F_SETFL, old_flags)
+                    elif char in ("\r", "\n"):
+                        return str(selected + 1)
+
+        finally:
+            # Restore terminal settings on Linux
+            if os.name != "nt":
+                try:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                except:
+                    pass
 
     def change_mode(self):
         """Mode selection"""
@@ -487,6 +642,9 @@ class CLITypingTest:
             if os.name != "nt":
                 tty.setraw(sys.stdin.fileno())
 
+            # Hide cursor (only once)
+            self.hide_cursor()
+
             self.render()
             self.last_term_size = self.get_terminal_size()
             last_input_len = 0
@@ -531,12 +689,15 @@ class CLITypingTest:
                                 last_input_len = -1  # Force re-render
                             elif char == b"\x0d":  # Ctrl+M
                                 self.change_mode()
+                                self.hide_cursor()
                                 last_input_len = -1
                             elif char == b"\x04":  # Ctrl+D
                                 self.change_difficulty()
+                                self.hide_cursor()
                                 last_input_len = -1
                             elif char == b"\x14":  # Ctrl+T
                                 self.change_theme()
+                                self.hide_cursor()
                                 last_input_len = -1
                             elif char == b"\x10":  # Ctrl+P pause/resume
                                 if self.engine.started:
@@ -605,12 +766,15 @@ class CLITypingTest:
                                 last_input_len = -1
                             elif char == "\x0d":  # Ctrl+M
                                 self.change_mode()
+                                self.hide_cursor()
                                 last_input_len = -1
                             elif char == "\x04":  # Ctrl+D
                                 self.change_difficulty()
+                                self.hide_cursor()
                                 last_input_len = -1
                             elif char == "\x14":  # Ctrl+T
                                 self.change_theme()
+                                self.hide_cursor()
                                 last_input_len = -1
                             elif char == "\x10":  # Ctrl+P pause/resume
                                 if self.engine.started:
@@ -656,17 +820,22 @@ class CLITypingTest:
                     self.running = False
                     break
         finally:
+            # Restore cursor
+            self.show_cursor()
+            
             # Restore terminal settings on Linux
             if os.name != "nt":
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
-            # Show goodbye message
+            # Show goodbye message - properly centered
             self.clear_screen()
-            v_padding = self.get_vertical_padding(1)
             newline = "\r\n" if os.name != "nt" else "\n"
+            v_padding = self.get_vertical_padding(1)
             print(newline * v_padding, end="", flush=True)
-            print(self.center_text("\033[90mgoodbye\033[0m\n"), end="", flush=True)
-            print(newline * v_padding, end="", flush=True)
+            goodbye_text = "\033[90mgoodbye\033[0m"
+
+            # FIX: Added + newline here to satisfy the shell requirements
+            print(self.center_text(goodbye_text, strip_ansi=True) + newline, end="", flush=True)
 
 if __name__ == "__main__":
     app = CLITypingTest()
