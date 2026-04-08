@@ -235,7 +235,7 @@ class CLITypingTest:
         self._needs_render = False
         self._needs_full_render = False
 
-    def _render_wpm_graph(self, wpm_history: list, width: int = 30) -> list[str]:
+    def _render_wpm_graph(self, wpm_history: list, width: int = 40) -> list[str]:
         """
         Render a WPM over time bar chart using Unicode block characters.
         Returns list of lines (top to bottom) for the graph.
@@ -246,23 +246,27 @@ class CLITypingTest:
             return ["\033[90mnot enough data for graph\033[0m"]
 
         wpm_values = [wpm for _, wpm in wpm_history]
+        time_values = [t for t, _ in wpm_history]
         max_wpm = max(wpm_values)
+        total_time = time_values[-1]
 
         if max_wpm == 0:
             return ["\033[90mno data\033[0m"]
 
         blocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
         theme_color = self.hex_to_ansi(self.engine.accent_color)
-        graph_height = 5
+        graph_height = 7  # taller graph
 
         # Sample to fit width
         if len(wpm_values) > width:
             step = len(wpm_values) / width
-            sampled = [wpm_values[int(i * step)] for i in range(width)]
+            sampled_wpm = [wpm_values[int(i * step)] for i in range(width)]
+            sampled_time = [time_values[int(i * step)] for i in range(width)]
         else:
-            sampled = wpm_values
+            sampled_wpm = wpm_values
+            sampled_time = time_values
 
-        bar_count = len(sampled)
+        bar_count = len(sampled_wpm)
 
         # Round y_max to nice number
         if max_wpm <= 10:
@@ -273,59 +277,120 @@ class CLITypingTest:
             y_max = 100
         elif max_wpm <= 150:
             y_max = 150
+        elif max_wpm <= 200:
+            y_max = 200
         else:
             y_max = ((max_wpm // 50) + 1) * 50
 
-        # Calculate bar levels (0-5 scale)
-        bar_levels = [(wpm / y_max) * graph_height for wpm in sampled]
+        # Calculate bar levels (0-graph_height scale)
+        bar_levels = [(wpm / y_max) * graph_height for wpm in sampled_wpm]
+
+        # Ensure all graph rows have the same total width for proper centering
+        graph_width = bar_count + 12  # 5 prefix + bar_count + 7 trailing
 
         graph_lines = []
 
-        # Build each row from top (row=5) to bottom (row=1)
+        # Build each row from top (row=graph_height) to bottom (row=1)
         for row in range(graph_height, 0, -1):
-            # Y-axis label
-            y_top = (row / graph_height) * y_max
+            y_value = (row / graph_height) * y_max
+
             if row == graph_height:
-                label = f"{int(y_top):>4}"
+                label = f"{int(y_max):>4}"
+            elif row == graph_height // 2 + 1:
+                mid_val = (y_max // 2)
+                label = f"{mid_val:>4}"
             elif row == 1:
-                label = f"{int(y_top):>4}"
+                label = f"{int(y_value):>4}"
             else:
                 label = "    "
 
-            line_parts = [f"\033[90m{label}\033[0m "]
+            line_parts = [f"\033[90m{label}│\033[0m"]
 
             for i, bar_level in enumerate(bar_levels):
                 if bar_level >= row + 1:
-                    # Bar fully covers this row - solid block
                     line_parts.append(f"{theme_color}█\033[0m")
                 elif bar_level >= row:
-                    # Bar top is at this row - use fractional block
-                    frac = bar_level - row  # 0.0 to 1.0
-                    idx = int(frac * 7)  # 0-7 -> blocks index
-                    # When frac is ~0, use ▁; when ~1, use █
-                    block = blocks[min(idx, 6)] if frac < 1.0 else blocks[7]
+                    frac = bar_level - row
+                    block_idx = int(frac * 7)
+                    block = blocks[min(block_idx, 6)]
                     line_parts.append(f"{theme_color}{block}\033[0m")
                 else:
                     line_parts.append(" ")
 
+            # Pad to consistent width
+            current_len = len(line_parts) - 5  # subtract ANSI prefix overhead (rough)
+            remaining = graph_width - 5 - bar_count
+            line_parts.append(" " * remaining)
+
             graph_lines.append("".join(line_parts))
 
-        # X-axis line
-        x_axis = "     " + "─" * bar_count
-        graph_lines.append(f"\033[90m{x_axis}\033[0m")
+        # X-axis with tick marks (└ aligns with │ in bar rows)
+        x_line = "    " + "└" + "─" * (bar_count - 1) + " " * (graph_width - 5 - bar_count + 1)
+        graph_lines.append(f"\033[90m{x_line}\033[0m")
 
-        # Time labels
-        total_time = wpm_history[-1][0]
-        time_label_end = f"{int(total_time)}s"
-        padding = max(0, bar_count - len(time_label_end))
-        time_str = f"     \033[90m0{' ' * padding}{time_label_end}\033[0m"
-        graph_lines.append(time_str)
+        # Time labels row - place labels without overlap
+        time_label_positions = self._compute_label_positions(total_time, bar_count, 5)
+        time_row = [" "] * graph_width
 
-        # Final WPM
-        final_wpm = wpm_values[-1]
-        graph_lines.append(f"     \033[90mwpm: {int(final_wpm)}\033[0m")
+        # Place labels right-to-left so end-time label always gets priority
+        for pos_seconds, pos_bar in reversed(time_label_positions):
+            label = f"{int(pos_seconds)}s"
+            start = pos_bar - len(label) // 2 + 5
+            end = start + len(label)
+
+            conflict = False
+            for idx in range(max(0, start - 1), min(end + 1, len(time_row))):
+                if time_row[idx] != " ":
+                    conflict = True
+                    break
+
+            if not conflict:
+                for ci, ch in enumerate(label):
+                    idx = start + ci
+                    if 0 <= idx < len(time_row):
+                        time_row[idx] = ch
+
+        graph_lines.append("\033[90m" + "".join(time_row) + "\033[0m")
 
         return graph_lines
+
+    def _compute_label_positions(self, total_time: float, bar_count: int, max_labels: int) -> list[tuple[float, int]]:
+        """
+        Compute positions for time labels along the x-axis.
+        Returns list of (time_seconds, bar_index) pairs, ordered left-to-right (0s to total_time).
+        """
+        if bar_count < 2 or total_time <= 0:
+            return [(0, 0), (total_time, bar_count - 1)]
+
+        raw_interval = total_time / (max_labels - 1)
+
+        if raw_interval <= 1:
+            interval = 1
+        elif raw_interval <= 2:
+            interval = 2
+        elif raw_interval <= 5:
+            interval = 5
+        elif raw_interval <= 10:
+            interval = 10
+        elif raw_interval <= 15:
+            interval = 15
+        elif raw_interval <= 30:
+            interval = 30
+        else:
+            interval = 60
+
+        positions = []
+        t = 0
+        while t <= total_time + 0.01:  # small epsilon for float comparison
+            bar_idx = int((t / total_time) * (bar_count - 1))
+            positions.append((t, bar_idx))
+            t += interval
+
+        # Always include end if not already
+        if not positions or positions[-1][0] < total_time - 0.01:
+            positions.append((total_time, bar_count - 1))
+
+        return positions
 
     def _show_results_from_result(self, result):
         """Display results from TestResult object (callback-driven)"""
