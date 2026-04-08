@@ -3,6 +3,7 @@ import sys
 import os
 import time
 import shutil
+import asciichartpy as asc
 from src.core.engine import TypingTestEngine
 from src.core.presentation import (
     colorize_char_for_cli,
@@ -237,10 +238,8 @@ class CLITypingTest:
 
     def _render_wpm_graph(self, wpm_history: list, width: int = 40) -> list[str]:
         """
-        Render a WPM over time bar chart using Unicode block characters.
-        Returns list of lines (top to bottom) for the graph.
-
-        Uses ▁▂▃▄▅▆▇█ block elements for smooth bar tops.
+        Render WPM over time using asciichartpy for a smooth line graph.
+        Returns list of lines ready for centering.
         """
         if not wpm_history or len(wpm_history) < 2:
             return ["\033[90mnot enough data for graph\033[0m"]
@@ -253,86 +252,47 @@ class CLITypingTest:
         if max_wpm == 0:
             return ["\033[90mno data\033[0m"]
 
-        blocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
         theme_color = self.hex_to_ansi(self.engine.accent_color)
-        graph_height = 7  # taller graph
+        dim = "\033[90m"
+        reset = "\033[0m"
 
-        # Sample to fit width
-        if len(wpm_values) > width:
-            step = len(wpm_values) / width
-            sampled_wpm = [wpm_values[int(i * step)] for i in range(width)]
-            sampled_time = [time_values[int(i * step)] for i in range(width)]
-        else:
-            sampled_wpm = wpm_values
-            sampled_time = time_values
-
-        bar_count = len(sampled_wpm)
-
-        # Round y_max to nice number
-        if max_wpm <= 10:
-            y_max = 10
-        elif max_wpm <= 50:
-            y_max = 50
-        elif max_wpm <= 100:
-            y_max = 100
-        elif max_wpm <= 150:
-            y_max = 150
-        elif max_wpm <= 200:
-            y_max = 200
-        else:
-            y_max = ((max_wpm // 50) + 1) * 50
-
-        # Calculate bar levels (0-graph_height scale)
-        bar_levels = [(wpm / y_max) * graph_height for wpm in sampled_wpm]
-
-        # Ensure all graph rows have the same total width for proper centering
-        graph_width = bar_count + 12  # 5 prefix + bar_count + 7 trailing
+        # Plot using asciichartpy
+        chart = asc.plot(wpm_values, {
+            'height': 5,
+            'format': '{:6.0f}',
+        })
 
         graph_lines = []
-
-        # Build each row from top (row=graph_height) to bottom (row=1)
-        for row in range(graph_height, 0, -1):
-            y_value = (row / graph_height) * y_max
-
-            if row == graph_height:
-                label = f"{int(y_max):>4}"
-            elif row == graph_height // 2 + 1:
-                mid_val = (y_max // 2)
-                label = f"{mid_val:>4}"
-            elif row == 1:
-                label = f"{int(y_value):>4}"
+        # Find max width (visible chars, strip ANSI)
+        raw_lines = []
+        for line in chart.split("\n"):
+            match = re.search(r'[┤┼│]', line)
+            if match:
+                sep_idx = match.start()
+                label = line[:sep_idx].rstrip()
+                chart_part = line[sep_idx:]
+                raw_lines.append((label, chart_part))
             else:
-                label = "    "
+                raw_lines.append(("", line))
 
-            line_parts = [f"\033[90m{label}│\033[0m"]
+        # Calculate max visible width
+        max_width = 0
+        for label, chart_part in raw_lines:
+            visible = len(label) + len(chart_part)
+            max_width = max(max_width, visible)
 
-            for i, bar_level in enumerate(bar_levels):
-                if bar_level >= row + 1:
-                    line_parts.append(f"{theme_color}█\033[0m")
-                elif bar_level >= row:
-                    frac = bar_level - row
-                    block_idx = int(frac * 7)
-                    block = blocks[min(block_idx, 6)]
-                    line_parts.append(f"{theme_color}{block}\033[0m")
-                else:
-                    line_parts.append(" ")
+        # Build padded, colored lines
+        for label, chart_part in raw_lines:
+            padding = " " * (max_width - len(label) - len(chart_part))
+            graph_lines.append(
+                f"{dim}{label}{reset}{theme_color}{chart_part}{padding}{reset}"
+            )
 
-            # Pad to consistent width
-            current_len = len(line_parts) - 5  # subtract ANSI prefix overhead (rough)
-            remaining = graph_width - 5 - bar_count
-            line_parts.append(" " * remaining)
-
-            graph_lines.append("".join(line_parts))
-
-        # X-axis with tick marks (└ aligns with │ in bar rows)
-        x_line = "    " + "└" + "─" * (bar_count - 1) + " " * (graph_width - 5 - bar_count + 1)
-        graph_lines.append(f"\033[90m{x_line}\033[0m")
-
-        # Time labels row - place labels without overlap
+        # Add time labels row
+        bar_count = max_width
         time_label_positions = self._compute_label_positions(total_time, bar_count, 5)
-        time_row = [" "] * graph_width
 
-        # Place labels right-to-left so end-time label always gets priority
+        time_row = [" "] * (bar_count + 10)
         for pos_seconds, pos_bar in reversed(time_label_positions):
             label = f"{int(pos_seconds)}s"
             start = pos_bar - len(label) // 2 + 5
@@ -350,7 +310,7 @@ class CLITypingTest:
                     if 0 <= idx < len(time_row):
                         time_row[idx] = ch
 
-        graph_lines.append("\033[90m" + "".join(time_row) + "\033[0m")
+        graph_lines.append(f"{dim}{''.join(time_row)}{reset}")
 
         return graph_lines
 
