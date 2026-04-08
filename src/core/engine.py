@@ -56,7 +56,8 @@ class TestResult:
     timestamp: str
     is_new_personal_best: bool
     personal_best: Optional[dict] = None
-    wpm_history: list = field(default_factory=list)  # For graph: [(elapsed_seconds, wpm), ...]
+    wpm_history: list = field(default_factory=list)  # Cumulative: [(elapsed_seconds, wpm), ...]
+    burst_history: list = field(default_factory=list)  # Per-word bursts: [(elapsed_seconds, burst_wpm), ...]
 
 
 class TypingTestEngine:
@@ -94,6 +95,11 @@ class TypingTestEngine:
         self._correct_count = 0  # Incremental correct count
         self._wpm_snapshots: list[tuple[float, float]] = []  # (elapsed_sec, wpm)
         self._last_wpm_calc_time = 0.0
+
+        # Burst tracking (per-word WPM like MonkeyType)
+        self._word_start_time = 0.0  # elapsed when current word started
+        self._word_start_index = 0   # char index where current word started
+        self._burst_history: list[tuple[float, float]] = []  # (elapsed_seconds, burst_wpm)
 
         # Personal best tracking
         self._last_test_result: Optional[TestResult] = None
@@ -338,6 +344,9 @@ class TypingTestEngine:
         self._correct_count = 0
         self._wpm_snapshots = []
         self._last_wpm_calc_time = 0.0
+        self._burst_history = []
+        self._word_start_time = 0.0
+        self._word_start_index = 0
         self._last_test_result = None
 
     def type_character(self, char: str) -> bool:
@@ -372,7 +381,26 @@ class TypingTestEngine:
         if is_correct:
             self._correct_count += 1
 
-        # Capture WPM snapshot every 0.5 seconds for graph
+        # Burst tracking: detect word boundaries (space typed = word ended)
+        if char == " " or current_index == len(self.current_text) - 1:
+            # Calculate burst WPM for completed word
+            word_chars = current_index - self._word_start_index + 1
+            if current_index == len(self.current_text) - 1:
+                word_chars = current_index - self._word_start_index + 1
+            else:
+                word_chars = current_index - self._word_start_index
+
+            word_time = elapsed - self._word_start_time
+            if word_time > 0.01 and word_chars > 0:
+                burst_wpm = (word_chars / 5.0) / (word_time / 60.0)
+                burst_wpm = min(burst_wpm, 300)  # cap at 300 WPM
+                self._burst_history.append((elapsed, round(burst_wpm, 1)))
+
+            # Start new word tracking
+            self._word_start_time = elapsed
+            self._word_start_index = current_index + 1
+
+        # Capture cumulative WPM snapshot every 0.5 seconds
         if elapsed - self._last_wpm_calc_time >= 0.5:
             _, wpm = self._calculate_stats_internal()
             self._wpm_snapshots.append((elapsed, wpm))
@@ -474,6 +502,8 @@ class TypingTestEngine:
         # Save and get result
         result = self._save_test_result(accuracy, wpm)
         self._last_test_result = result
+        # Attach burst history to result
+        result.burst_history = list(self._burst_history)
 
         # Fire callback
         self.on_test_complete(result)
@@ -522,6 +552,10 @@ class TypingTestEngine:
     def get_wpm_history(self) -> list[tuple[float, float]]:
         """Get WPM over time for graph: [(elapsed_seconds, wpm), ...]"""
         return list(self._wpm_snapshots)
+
+    def get_burst_history(self) -> list[tuple[float, float]]:
+        """Get per-word burst WPM for graph: [(elapsed_seconds, burst_wpm), ...]"""
+        return list(self._burst_history)
 
     # ─── State Interface ──────────────────────────────────────────
 

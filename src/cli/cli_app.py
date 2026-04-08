@@ -3,7 +3,6 @@ import sys
 import os
 import time
 import shutil
-import asciichartpy as asc
 from src.core.engine import TypingTestEngine
 from src.core.presentation import (
     colorize_char_for_cli,
@@ -236,66 +235,212 @@ class CLITypingTest:
         self._needs_render = False
         self._needs_full_render = False
 
-    def _render_wpm_graph(self, wpm_history: list, width: int = 40) -> list[str]:
+    def _render_wpm_graph(
+        self,
+        burst_history: list,
+        cumulative_history: list,
+        width: int = 64,
+    ) -> list[str]:
         """
-        Render WPM over time using asciichartpy for a smooth line graph.
-        Returns list of lines ready for centering.
+        Render WPM graph with two lines:
+        - Bursts: white line (per-word bursts)
+        - Cumulative: colored line on top (R-Y-G based on WPM value)
         """
-        if not wpm_history or len(wpm_history) < 2:
+        primary = burst_history if burst_history else cumulative_history
+        if not primary or len(primary) < 2:
             return ["\033[90mnot enough data for graph\033[0m"]
 
-        wpm_values = [wpm for _, wpm in wpm_history]
-        time_values = [t for t, _ in wpm_history]
-        max_wpm = max(wpm_values)
-        total_time = time_values[-1]
-
-        if max_wpm == 0:
-            return ["\033[90mno data\033[0m"]
-
-        theme_color = self.hex_to_ansi(self.engine.accent_color)
         dim = "\033[90m"
         reset = "\033[0m"
 
-        # Plot using asciichartpy
-        chart = asc.plot(wpm_values, {
-            'height': 5,
-            'format': '{:6.0f}',
-        })
+        # Auto-scale Y-axis
+        data_max = max(v for _, v in primary)
+        data_min = min(v for _, v in primary)
+        data_range = data_max - data_min
+        padding = max(data_range * 0.3, 10)
+
+        def round_nice(val, up=True):
+            step = 10
+            if up:
+                return int((val + step - 0.5) // step * step)
+            else:
+                return max(0, int(val // step * step))
+
+        y_max = round_nice(data_max + padding, up=True)
+        y_min = round_nice(max(0, data_min - padding), up=False)
+        y_max = max(y_max, y_min + 20)
+        y_min = min(y_min, y_max - 20)
+        y_span = y_max - y_min
+
+        # Braille grid
+        num_braille_rows = 16
+        sub_height = num_braille_rows * 4
+        sub_width = width * 2
+
+        def wpm_to_sub_row(wpm):
+            ratio = max(0.0, min(1.0, (wpm - y_min) / y_span))
+            return max(0, min(sub_height - 1, round((1.0 - ratio) * (sub_height - 1))))
+
+        # Sample both datasets to same width
+        def sample_data(data, target_w):
+            vals = [v for _, v in data]
+            if len(vals) > target_w:
+                step = len(vals) / target_w
+                return [vals[int(i * step)] for i in range(target_w)]
+            else:
+                result = []
+                for i in range(target_w):
+                    ratio = i / max(target_w - 1, 1)
+                    idx = ratio * (len(vals) - 1)
+                    low = int(idx)
+                    high = min(low + 1, len(vals) - 1)
+                    frac = idx - low
+                    result.append(vals[low] * (1 - frac) + vals[high] * frac)
+                return result
+
+        burst_sampled = sample_data(burst_history, sub_width) if burst_history else None
+        cumul_sampled = sample_data(cumulative_history, sub_width) if cumulative_history else None
+        sub_width = len(burst_sampled) if burst_sampled else len(cumul_sampled)
+
+        # Track which sub-pixel cells have bursts vs cumulative
+        burst_grid = [[False] * sub_width for _ in range(sub_height)]
+        cumul_grid = [[False] * sub_width for _ in range(sub_height)]
+
+        def draw_line_on_grid(grid, values):
+            for col in range(sub_width - 1):
+                r0 = wpm_to_sub_row(values[col])
+                r1 = wpm_to_sub_row(values[col + 1])
+                dr = r1 - r0
+                if dr == 0:
+                    grid[r0][col] = True
+                    grid[r0][col + 1] = True
+                else:
+                    step_r = 1 if dr > 0 else -1
+                    adr = abs(dr)
+                    err = 0
+                    cr = r0
+                    cc = col
+                    while cc <= col + 1:
+                        if 0 <= cr < sub_height and 0 <= cc < sub_width:
+                            grid[cr][cc] = True
+                        err += adr
+                        if 2 * err >= 1:
+                            cr += step_r
+                            err -= 1
+                        cc += 1
+
+        if burst_sampled:
+            draw_line_on_grid(burst_grid, burst_sampled)
+        if cumul_sampled:
+            draw_line_on_grid(cumul_grid, cumul_sampled)
+
+        # Compute colors
+        burst_color = "\033[38;2;160;160;160m"  # medium gray (brighter than axis)
+        avg_wpm = sum(cumul_sampled) / len(cumul_sampled) if cumul_sampled else 0
+        if avg_wpm >= 60:
+            cumul_color = "\033[32m"  # green
+        elif avg_wpm >= 30:
+            cumul_color = "\033[33m"  # yellow
+        else:
+            cumul_color = "\033[31m"  # red
+        dot_bits = [
+            (0, 0, 0x01), (1, 0, 0x08),
+            (0, 1, 0x02), (1, 1, 0x10),
+            (0, 2, 0x04), (1, 2, 0x20),
+            (0, 3, 0x40), (1, 3, 0x80),
+        ]
+
+        # Build grid: prefer cumul dots over burst where they overlap
+        merged_grid = [[False] * sub_width for _ in range(sub_height)]
+        for r in range(sub_height):
+            for c in range(sub_width):
+                merged_grid[r][c] = burst_grid[r][c] or cumul_grid[r][c]
+
+        braille_chars = []
+        for br in range(num_braille_rows):
+            chars = []
+            for bc in range(sub_width // 2):
+                bits = 0x2800
+                for dx, dy, bit in dot_bits:
+                    px = bc * 2 + dx
+                    py = br * 4 + dy
+                    if 0 <= px < sub_width and 0 <= py < sub_height and merged_grid[py][px]:
+                        bits |= bit
+                chars.append(chr(bits))
+            braille_chars.append("".join(chars))
+
+        # Track which braille chars have cumulative data
+        cumul_at_char = set()
+        if cumul_grid:
+            for r in range(sub_height):
+                for c in range(sub_width):
+                    if cumul_grid[r][c]:
+                        br = r // 4
+                        bc = c // 2
+                        if br < num_braille_rows and bc < sub_width // 2:
+                            cumul_at_char.add((br, bc))
+
+        # Y-axis labels
+        y_labels_at_rows = {}
+        label_every = 4
+        for i in range(0, num_braille_rows, label_every):
+            ratio = i / (num_braille_rows - 1) if num_braille_rows > 1 else 0
+            y_val = y_max - ratio * y_span
+            y_labels_at_rows[i] = round(y_val)
+
+        label_width = 4
+        bar_count = sub_width // 2
+        time_label_margin = 4
+        graph_content_width = label_width + 1 + bar_count + time_label_margin
 
         graph_lines = []
-        # Find max width (visible chars, strip ANSI)
-        raw_lines = []
-        for line in chart.split("\n"):
-            match = re.search(r'[┤┼│]', line)
-            if match:
-                sep_idx = match.start()
-                label = line[:sep_idx].rstrip()
-                chart_part = line[sep_idx:]
-                raw_lines.append((label, chart_part))
+
+        # Legend in upper right of graph area (before first braille row)
+        legend = "● wpm  ● bursts"
+        legend_padded = " " * (graph_content_width - len(legend)) + legend
+        # Colorize just the dots
+        legend_colored = ""
+        for i, ch in enumerate(legend_padded):
+            # Find position within the legend string
+            leg_pos = i - (graph_content_width - len(legend))
+            if 0 <= leg_pos < len(legend) and ch == "●":
+                if leg_pos == 0:
+                    legend_colored += f"{cumul_color}●\033[0m"
+                else:
+                    legend_colored += f"{burst_color}●\033[0m"
             else:
-                raw_lines.append(("", line))
+                legend_colored += f"{dim}{ch}\033[0m"
 
-        # Calculate max visible width
-        max_width = 0
-        for label, chart_part in raw_lines:
-            visible = len(label) + len(chart_part)
-            max_width = max(max_width, visible)
+        graph_lines.append(legend_colored)
 
-        # Build padded, colored lines
-        for label, chart_part in raw_lines:
-            padding = " " * (max_width - len(label) - len(chart_part))
-            graph_lines.append(
-                f"{dim}{label}{reset}{theme_color}{chart_part}{padding}{reset}"
-            )
+        for br in range(num_braille_rows):
+            y_val = y_labels_at_rows.get(br, "")
+            label = f"{y_val:>{label_width}}"
+            row_str = ""
+            for bc in range(bar_count):
+                char_code = ord(braille_chars[br][bc]) if bc < len(braille_chars[br]) else 0x2800
 
-        # Add time labels row
-        bar_count = max_width
+                if (br, bc) in cumul_at_char:
+                    # Single color for entire cumulative line
+                    row_str += f"{cumul_color}{chr(char_code)}\033[0m"
+                else:
+                    # Burst line: grayish (brighter than axis, not white)
+                    row_str += f"{burst_color}{chr(char_code)}\033[0m"
+
+            graph_lines.append(f"{dim}{label}│{row_str}{' ' * time_label_margin}")
+
+        # X-axis
+        x_line = " " * label_width + "└" + "─" * bar_count + " " * time_label_margin
+        graph_lines.append(f"{dim}{x_line}{reset}")
+
+        # Time labels row
+        total_time = primary[-1][0]
         time_label_positions = self._compute_label_positions(total_time, bar_count, 5)
+        time_row = [" "] * graph_content_width
 
-        time_row = [" "] * (bar_count + 10)
         for pos_seconds, pos_bar in reversed(time_label_positions):
             label = f"{int(pos_seconds)}s"
-            start = pos_bar - len(label) // 2 + 5
+            start = label_width + 1 + pos_bar - len(label) // 2
             end = start + len(label)
 
             conflict = False
@@ -356,20 +501,21 @@ class CLITypingTest:
         """Display results from TestResult object (callback-driven)"""
         theme_color = self.hex_to_ansi(self.engine.accent_color)
 
-        # Determine colors
-        if result.accuracy >= 95:
-            acc_color = theme_color
-        elif result.accuracy >= 90:
-            acc_color = "\033[93m"
-        else:
-            acc_color = "\033[91m"
-
+        # Red-yellow-green for WPM
         if result.wpm >= 60:
-            wpm_color = theme_color
+            wpm_color = "\033[32m"  # green
         elif result.wpm >= 30:
-            wpm_color = "\033[93m"
+            wpm_color = "\033[33m"  # yellow
         else:
-            wpm_color = "\033[91m"
+            wpm_color = "\033[31m"  # red
+
+        # Red-yellow-green for accuracy
+        if result.accuracy >= 95:
+            acc_color = "\033[32m"  # green
+        elif result.accuracy >= 90:
+            acc_color = "\033[33m"  # yellow
+        else:
+            acc_color = "\033[31m"  # red
 
         content_lines = []
 
@@ -381,8 +527,11 @@ class CLITypingTest:
 
         content_lines.append("")
 
-        # Render WPM graph
-        graph_lines = self._render_wpm_graph(result.wpm_history)
+        # Render WPM graph: bursts (white) + cumulative WPM (colored line)
+        graph_lines = self._render_wpm_graph(
+            burst_history=result.burst_history,
+            cumulative_history=result.wpm_history,
+        )
         content_lines.extend(graph_lines)
         content_lines.append("")
 
