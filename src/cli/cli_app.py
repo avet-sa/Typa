@@ -1029,6 +1029,7 @@ class CLITypingTest:
             print(newline * v_padding, end="", flush=True)
             goodbye_text = "\033[90mgoodbye\033[0m"
             print(self.center_text(goodbye_text, strip_ansi=True) + newline, end="", flush=True)
+            print(newline * v_padding, end="", flush=True)
 
 if __name__ == "__main__":
     app = CLITypingTest()
